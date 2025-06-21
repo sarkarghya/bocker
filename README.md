@@ -9,6 +9,8 @@ Docker implemented in around 100 lines of bash.
 
 ## Prerequisites
 
+Read [details](details.md) carefully since many of the below instructions are deprecated.
+
 The following packages are needed to run bocker.
 
 * btrfs-progs
