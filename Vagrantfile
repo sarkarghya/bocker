@@ -36,9 +36,9 @@ ip link set bridge0 up
 SCRIPT
 
 Vagrant.configure(2) do |config|
-	config.vm.box = 'puppetlabs/centos-7.0-64-nocm'
+	config.vm.box = 'centos/7'
 	config.ssh.username = 'root'
 	config.ssh.password = 'puppet'
-	config.ssh.insert_key = 'true'
+	config.ssh.insert_key = true
 	config.vm.provision 'shell', inline: $script
 end
