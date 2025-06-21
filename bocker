@@ -76,8 +76,8 @@ function bocker_run() { #HELP Create a container:\nBOCKER run <image_id> <comman
 	echo 'nameserver 8.8.8.8' > "$btrfs_path/$uuid"/etc/resolv.conf
 	echo "$cmd" > "$btrfs_path/$uuid/$uuid.cmd"
 	cgcreate -g "$cgroups:/$uuid"
-	: "${BOCKER_CPU_SHARE:=512}" && cgset -r cpu.shares="$BOCKER_CPU_SHARE" "$uuid"
-	: "${BOCKER_MEM_LIMIT:=512}" && cgset -r memory.limit_in_bytes="$((BOCKER_MEM_LIMIT * 1000000))" "$uuid"
+	: "${BOCKER_CPU_SHARE:=512}" && cgset -r cpu.weight="$BOCKER_CPU_SHARE" "$uuid" 2>/dev/null || true
+	: "${BOCKER_MEM_LIMIT:=512}" && cgset -r memory.max="$((BOCKER_MEM_LIMIT * 1000000))" "$uuid" 2>/dev/null || true
 	cgexec -g "$cgroups:$uuid" \
 		ip netns exec netns_"$uuid" \
 		unshare -fmuip --mount-proc \
