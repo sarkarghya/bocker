@@ -24,9 +24,9 @@ function bocker_pull() { #HELP Pull an image from Docker Hub:\nBOCKER pull <name
     image_name="$1"
     image_tag="${2:-latest}"
     
-    # Get authentication token from Docker Hub
+    # Add library prefix for official images
     if [[ "$image_name" != *"/"* ]]; then
-        image_name="library/$image_name"  # Official images are in library namespace
+        image_name="library/$image_name"
     fi
     
     # Get authentication token
@@ -73,12 +73,9 @@ function bocker_pull() { #HELP Pull an image from Docker Hub:\nBOCKER pull <name
              "$layer_url" -o "/tmp/$tmp_uuid/layer.tar.gz" 2>/dev/null
         
         if [[ -f "/tmp/$tmp_uuid/layer.tar.gz" ]]; then
-            # Try to extract as gzipped tar first, then as regular tar
-            if tar -tzf "/tmp/$tmp_uuid/layer.tar.gz" >/dev/null 2>&1; then
-                tar -xzf "/tmp/$tmp_uuid/layer.tar.gz" -C "/tmp/$tmp_uuid" 2>/dev/null || true
-            else
-                tar -xf "/tmp/$tmp_uuid/layer.tar.gz" -C "/tmp/$tmp_uuid" 2>/dev/null || true
-            fi
+            # Extract layer
+            tar -xzf "/tmp/$tmp_uuid/layer.tar.gz" -C "/tmp/$tmp_uuid" 2>/dev/null || \
+            tar -xf "/tmp/$tmp_uuid/layer.tar.gz" -C "/tmp/$tmp_uuid" 2>/dev/null || true
             rm -f "/tmp/$tmp_uuid/layer.tar.gz"
         fi
     done
@@ -90,6 +87,7 @@ function bocker_pull() { #HELP Pull an image from Docker Hub:\nBOCKER pull <name
     bocker_init "/tmp/$tmp_uuid"
     rm -rf "/tmp/$tmp_uuid"
 }
+
 
 function bocker_rm() { #HELP Delete an image or container:\nBOCKER rm <image_id or container_id>
 	[[ "$(bocker_check "$1")" == 1 ]] && echo "No container named '$1' exists" && exit 1
