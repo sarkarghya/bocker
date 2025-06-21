@@ -22,7 +22,7 @@ function bocker_init() { #HELP Create an image from a directory:\nBOCKER init <d
 
 function bocker_pull() { #HELP Pull an image from Docker Hub:\nBOCKER pull <name> <tag>
 	tmp_uuid="$(uuidgen)" && mkdir /tmp/"$tmp_uuid"
-	./download-frozen-image-v2 /tmp/"$tmp_uuid" "$1:$2" > /dev/null
+	./download-frozen-image-v2.sh /tmp/"$tmp_uuid" "$1:$2" > /dev/null
 	rm -rf /tmp/"$tmp_uuid"/repositories
 	for tar in $(jq '.[].Layers[]' --raw-output < /tmp/$tmp_uuid/manifest.json); do
 		tar xf /tmp/$tmp_uuid/$tar -C /tmp/$tmp_uuid && rm -rf /tmp/$tmp_uuid/$tar
