@@ -37,7 +37,19 @@ function bocker_pull() { #HELP Pull an image from Docker Hub:\nBOCKER pull <name
 function bocker_rm() { #HELP Delete an image or container:\nBOCKER rm <image_id or container_id>
 	[[ "$(bocker_check "$1")" == 1 ]] && echo "No container named '$1' exists" && exit 1
 	btrfs subvolume delete "$btrfs_path/$1" > /dev/null
-	cgdelete -g "$cgroups:/$1" &> /dev/null || true
+	
+	# Clean up cgroups v2
+	cgroup_path="/sys/fs/cgroup/bocker/$1"
+	if [[ -d "$cgroup_path" ]]; then
+		# Move any remaining processes out of the cgroup
+		if [[ -f "$cgroup_path/cgroup.procs" ]] && [[ -s "$cgroup_path/cgroup.procs" ]]; then
+			while read -r pid; do
+				[[ -n "$pid" ]] && echo "$pid" > /sys/fs/cgroup/cgroup.procs 2>/dev/null || true
+			done < "$cgroup_path/cgroup.procs"
+		fi
+		rmdir "$cgroup_path" 2>/dev/null || true
+	fi
+	
 	echo "Removed: $1"
 }
 
