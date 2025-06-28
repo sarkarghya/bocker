@@ -121,15 +121,23 @@ function bocker_run() { #HELP Create a container:\nBOCKER run <image_id> <comman
 	fi
 	
 	# Run the container command in cgroup v2
-	# Create a temporary script to handle the cgroup assignment and command execution
-	cat > "/tmp/bocker_run_$uuid.sh" << EOF
-#!/bin/bash
-# Move the current process to our cgroup
-echo \$\$ > '$cgroup_path/cgroup.procs' 2>/dev/null || true
-# Now chroot and run the command
-chroot '$btrfs_path/$uuid' /bin/sh -c '/bin/mount -t proc proc /proc && $cmd'
+cat > "/tmp/bocker_run_${uuid}_inner.sh" << EOF
+#!/bin/sh
+mount -t proc proc /proc
+exec $cmd
 EOF
-	chmod +x "/tmp/bocker_run_$uuid.sh"
+chmod +x "/tmp/bocker_run_${uuid}_inner.sh"
+mv "/tmp/bocker_run_${uuid}_inner.sh" "$btrfs_path/$uuid/"
+
+# Outer script: move to cgroup *before* entering container namespace
+	cat > "/tmp/bocker_run_${uuid}.sh" << EOF
+#!/bin/bash
+echo \$\$ > '$cgroup_path/cgroup.procs' 2>/dev/null || exit 1
+ip netns exec netns_"$uuid" unshare -fmuip --mount-proc chroot '$btrfs_path/$uuid' /$uuid_inner.sh
+EOF
+	
+	chmod +x "/tmp/bocker_run_${uuid}.sh"
+
 	
 	(
 		ip netns exec netns_"$uuid" unshare -fmuip --mount-proc "/tmp/bocker_run_$uuid.sh"
