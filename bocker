@@ -120,22 +120,23 @@ function bocker_run() { #HELP Create a container:\nBOCKER run <image_id> <comman
 		echo "$((BOCKER_MEM_LIMIT * 1000000))" > "$cgroup_path/memory.max" 2>/dev/null || true
 	fi
 	
-	# Function to run command in cgroup v2
-	run_in_cgroup() {
-		# Move current process to cgroup
-		echo $$ > "$cgroup_path/cgroup.procs"
-		# Execute the command
-		exec "$@"
-	}
-	
 	# Run the container command in cgroup v2
+	# Create a temporary script to handle the cgroup assignment and command execution
+	cat > "/tmp/bocker_run_$uuid.sh" << EOF
+#!/bin/bash
+# Move the current process to our cgroup
+echo \$\$ > '$cgroup_path/cgroup.procs' 2>/dev/null || true
+# Now chroot and run the command
+chroot '$btrfs_path/$uuid' /bin/sh -c '/bin/mount -t proc proc /proc && $cmd'
+EOF
+	chmod +x "/tmp/bocker_run_$uuid.sh"
+	
 	(
-		run_in_cgroup \
-		ip netns exec netns_"$uuid" \
-		unshare -fmuip --mount-proc \
-		chroot "$btrfs_path/$uuid" \
-		/bin/sh -c "/bin/mount -t proc proc /proc && $cmd"
+		ip netns exec netns_"$uuid" unshare -fmuip --mount-proc "/tmp/bocker_run_$uuid.sh"
 	) 2>&1 | tee "$btrfs_path/$uuid/$uuid.log" || true
+	
+	# Clean up the temporary script
+	rm -f "/tmp/bocker_run_$uuid.sh"
 	
 	# Cleanup network
 	ip link del dev veth0_"$uuid"
