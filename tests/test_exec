@@ -11,6 +11,11 @@ echo "DEBUG: Checking if image exists in image list..."
 [[ "$?" == 0 ]]
 echo "DEBUG: Image verification passed"
 
+echo "# Installing procps-ng package..."
+./bocker run "$img" yum install -y procps-ng
+ps="$(./bocker ps | grep 'yum install -y procps-ng' | awk '{print $1}')"
+echo "# Container ID for yum install: $ps"
+
 # ▼ ▼ ▼ Race condition waiting to happen ▼ ▼ ▼
 echo "DEBUG: Starting background container with 'sleep 5 && ps aux'"
 ./bocker run "$img" "sleep 5 && ps aux" &
