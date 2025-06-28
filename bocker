@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -o errexit -o nounset -o pipefail; shopt -s nullglob
-btrfs_path='/var/bocker' && cgroups='cpu,memory';
+btrfs_path='/var/bocker';
 [[ $# -gt 0 ]] && while [ "${1:0:2}" == '--' ]; do OPTION=${1:2}; [[ $OPTION =~ = ]] && declare "BOCKER_${OPTION/=*/}=${OPTION/*=/}" || declare "BOCKER_${OPTION}=x"; shift; done
 
 function bocker_check() {
@@ -121,17 +121,6 @@ function bocker_run() { #HELP Create a container:\nBOCKER run <image_id> <comman
 	fi
 	
 	# Run the container command in cgroup v2
-	# Create a temporary script to handle the cgroup assignment and command execution
-	# Inner script that runs inside the chroot
-	inner_script="bocker_inner.sh"
-	cat > "$btrfs_path/$uuid/$inner_script" << EOF
-#!/bin/sh
-mount -t proc proc /proc
-exec $cmd
-EOF
-
-	chmod +x "$btrfs_path/$uuid/$inner_script"
-
 	# Move the current shell process into the cgroup BEFORE unshare
 	# Fork a subshell that will run inside netns + chroot
 	(
@@ -140,13 +129,11 @@ EOF
 			exit 1
 		}
 
-		ip netns exec netns_"$uuid" unshare -fmuip --mount-proc \
-			chroot "$btrfs_path/$uuid" /$inner_script
+		ip netns exec netns_"$uuid" \
+		unshare -fmuip --mount-proc \
+		chroot "$btrfs_path/$uuid" \
+		/bin/sh -c "/bin/mount -t proc proc /proc && $cmd"
 	) 2>&1 | tee "$btrfs_path/$uuid/$uuid.log" || true
-
-	
-	# Clean up the temporary script
-	rm -f "$btrfs_path/$uuid/$inner_script"
 	
 	# Cleanup network
 	ip link del dev veth0_"$uuid"
