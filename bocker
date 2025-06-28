@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -o errexit -o nounset -o pipefail; shopt -s nullglob
-btrfs_path='/var/bocker' && cgroups='cpu,memory';
+btrfs_path='/var/bocker' && cgroups='cpu,cpuacct,memory';
 [[ $# -gt 0 ]] && while [ "${1:0:2}" == '--' ]; do OPTION=${1:2}; [[ $OPTION =~ = ]] && declare "BOCKER_${OPTION/=*/}=${OPTION/*=/}" || declare "BOCKER_${OPTION}=x"; shift; done
 
 function bocker_check() {
@@ -38,17 +38,7 @@ function bocker_rm() { #HELP Delete an image or container:\nBOCKER rm <image_id 
 	[[ "$(bocker_check "$1")" == 1 ]] && echo "No container named '$1' exists" && exit 1
 	btrfs subvolume delete "$btrfs_path/$1" > /dev/null
 	
-	# Clean up cgroups v2
-	cgroup_path="/sys/fs/cgroup/bocker/$1"
-	if [[ -d "$cgroup_path" ]]; then
-		# Move any remaining processes out of the cgroup
-		if [[ -f "$cgroup_path/cgroup.procs" ]] && [[ -s "$cgroup_path/cgroup.procs" ]]; then
-			while read -r pid; do
-				[[ -n "$pid" ]] && echo "$pid" > /sys/fs/cgroup/cgroup.procs 2>/dev/null || true
-			done < "$cgroup_path/cgroup.procs"
-		fi
-		rmdir "$cgroup_path" 2>/dev/null || true
-	fi
+	cgdelete -g "$cgroups:/$1" &> /dev/null || true
 	
 	echo "Removed: $1"
 }
@@ -92,62 +82,15 @@ function bocker_run() { #HELP Create a container:\nBOCKER run <image_id> <comman
 	echo 'nameserver 8.8.8.8' > "$btrfs_path/$uuid"/etc/resolv.conf
 	echo "$cmd" > "$btrfs_path/$uuid/$uuid.cmd"
 	
-	# cgroups v2 setup
-	cgroup_path="/sys/fs/cgroup/bocker/$uuid"
-	mkdir -p "$cgroup_path"
-	
-	# Check and enable controllers at parent level first
-	available_controllers=$(cat /sys/fs/cgroup/cgroup.controllers 2>/dev/null || echo "")
-	bocker_controllers=""
-	[[ "$available_controllers" =~ cpu ]] && bocker_controllers+=" +cpu"
-	[[ "$available_controllers" =~ memory ]] && bocker_controllers+=" +memory"
-	
-	# Enable controllers at bocker level if not already enabled
-	if [[ -n "$bocker_controllers" ]] && [[ -f /sys/fs/cgroup/bocker/cgroup.subtree_control ]]; then
-		echo "$bocker_controllers" > /sys/fs/cgroup/bocker/cgroup.subtree_control 2>/dev/null || true
-	fi
-	
-	# Set limits only if controllers are available
-	: "${BOCKER_CPU_SHARE:=512}"
-	: "${BOCKER_MEM_LIMIT:=512}"
-	
-	if [[ "$available_controllers" =~ cpu ]] && [[ -f "$cgroup_path/cpu.weight" ]]; then
-		cpu_weight=$((BOCKER_CPU_SHARE * 10000 / 1024))
-		echo "$cpu_weight" > "$cgroup_path/cpu.weight" 2>/dev/null || true
-	fi
-	
-	if [[ "$available_controllers" =~ memory ]] && [[ -f "$cgroup_path/memory.max" ]]; then
-		echo "$((BOCKER_MEM_LIMIT * 1000000))" > "$cgroup_path/memory.max" 2>/dev/null || true
-	fi
-	
-	# Run the container command in cgroup v2
-	# Create a temporary script to handle the cgroup assignment and command execution
-	# Inner script that runs inside the chroot
-	inner_script="bocker_inner.sh"
-	cat > "$btrfs_path/$uuid/$inner_script" << EOF
-#!/bin/sh
-mount -t proc proc /proc
-exec $cmd
-EOF
-
-	chmod +x "$btrfs_path/$uuid/$inner_script"
-
-	# Move the current shell process into the cgroup BEFORE unshare
-	# Fork a subshell that will run inside netns + chroot
-	(
-		echo $$ > "$cgroup_path/cgroup.procs" 2>/dev/null || {
-			echo "ERROR: Failed to move to cgroup: $cgroup_path" >&2
-			exit 1
-		}
-
-		ip netns exec netns_"$uuid" unshare -fmuip --mount-proc \
-			chroot "$btrfs_path/$uuid" /$inner_script
-	) 2>&1 | tee "$btrfs_path/$uuid/$uuid.log" || true
-
-	
-	# Clean up the temporary script
-	rm -f "$btrfs_path/$uuid/$inner_script"
-	
+        cgcreate -g "$cgroups:/$uuid"
+	: "${BOCKER_CPU_SHARE:=512}" && cgset -r cpu.shares="$BOCKER_CPU_SHARE" "$uuid"
+	: "${BOCKER_MEM_LIMIT:=512}" && cgset -r memory.limit_in_bytes="$((BOCKER_MEM_LIMIT * 1000000))" "$uuid"
+	cgexec -g "$cgroups:$uuid" \
+		ip netns exec netns_"$uuid" \
+		unshare -fmuip --mount-proc \
+		chroot "$btrfs_path/$uuid" \
+		/bin/sh -c "/bin/mount -t proc proc /proc && $cmd" \
+		2>&1 | tee "$btrfs_path/$uuid/$uuid.log" || true
 	# Cleanup network
 	ip link del dev veth0_"$uuid"
 	ip netns del netns_"$uuid"
