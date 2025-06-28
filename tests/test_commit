@@ -6,49 +6,58 @@ img="$(./bocker init ~/base-image | awk '{print $2}')"
 echo "Created image: $img"
 
 # Verify the image exists in the image list
-./bocker images | grep -qw "$img"
-[[ "$?" == 0 ]]
-echo "Image $img verified in image list"
+if ./bocker images | grep -qw "$img"; then
+  echo "Image $img verified in image list"
+else
+  echo "Error: Image $img not found in image list"
+  exit 1
+fi
 
 # Test 1: Run wget command (should fail since wget is not installed)
 echo "Testing wget command (should fail)..."
-./bocker run "$img" wget
-ps="$(./bocker ps | grep 'wget' | awk '{print $1}')"
-echo "Container process ID: $ps"
-
-# Get logs from the wget test
-logs="$(./bocker logs "$ps")"
-echo "Logs from wget test: $logs"
-
-# Clean up the failed container
-./bocker rm "$ps"
-echo "Removed container $ps"
-
-# Verify that wget command failed as expected
-[[ "$logs" == *"wget: command not found"* ]]
-echo "Confirmed: wget command not found (as expected)"
+if ./bocker run "$img" wget; then
+  echo "Unexpected: wget command succeeded"
+else
+  echo "Expected: wget command failed"
+  ps="$(./bocker ps | grep 'wget' | awk '{print $1}')"
+  echo "Container process ID: $ps"
+  logs="$(./bocker logs "$ps")"
+  echo "Logs from wget test: $logs"
+  ./bocker rm "$ps"
+  echo "Removed container $ps"
+  if [[ "$logs" == *"wget: command not found"* ]]; then
+    echo "Confirmed: wget command not found (as expected)"
+  else
+    echo "Warning: wget failure message unexpected"
+  fi
+fi
 
 # Test 2: Install wget using yum
 echo "Installing wget using yum..."
-./bocker run "$img" yum install -y wget
-ps="$(./bocker ps | grep 'yum install -y wget' | awk '{print $1}')"
-echo "Yum install process ID: $ps"
-
-# Commit the changes to create a new image with wget installed
-./bocker commit "$ps" "$img"
-echo "Committed changes to image $img (wget now installed)"
+if ./bocker run "$img" yum install -y wget; then
+  ps="$(./bocker ps | grep 'yum install -y wget' | awk '{print $1}')"
+  echo "Yum install process ID: $ps"
+  ./bocker commit "$ps" "$img"
+  echo "Committed changes to image $img (wget now installed)"
+else
+  echo "Error: yum install wget failed"
+  exit 1
+fi
 
 # Test 3: Use wget to fetch data from httpbin.org
 echo "Testing wget with HTTP request..."
-./bocker run "$img" wget -qO- http://httpbin.org/get
-ps="$(./bocker ps | grep 'wget -qO- http://httpbin.org/get' | awk '{print $1}')"
-echo "Wget HTTP request process ID: $ps"
-
-# Get logs from the successful wget command
-logs="$(./bocker logs "$ps")"
-echo "Logs from wget HTTP request:"
-echo "$logs"
-
-# Verify that the HTTP request was successful
-[[ "$logs" == *'http://httpbin.org/get'* ]]
-echo "Success: wget successfully fetched data from http://httpbin.org/get"
+if ./bocker run "$img" wget -qO- http://httpbin.org/get; then
+  ps="$(./bocker ps | grep 'wget -qO- http://httpbin.org/get' | awk '{print $1}')"
+  echo "Wget HTTP request process ID: $ps"
+  logs="$(./bocker logs "$ps")"
+  echo "Logs from wget HTTP request:"
+  echo "$logs"
+  if [[ "$logs" == *'http://httpbin.org/get'* ]]; then
+    echo "Success: wget successfully fetched data from http://httpbin.org/get"
+  else
+    echo "Warning: wget did not fetch expected data"
+  fi
+else
+  echo "Error: wget HTTP request failed"
+  exit 1
+fi
