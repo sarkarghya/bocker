@@ -1,27 +1,77 @@
 #!/usr/bin/env bash
 set -o errexit -o nounset -o pipefail
 
+# Function to test bocker container runs and check their output
 function bocker_run_test() {
-	./bocker run "$1" "$2" > /dev/null
-	ps="$(./bocker ps | grep "$2" | awk '{print $1}')"
-	logs="$(./bocker logs "$ps")"
-	if [[ "$logs" == *"$3"* ]]; then
-		echo 0
-	else
-		echo 1
-	fi
+    # Run a container with image $1 and command $2, suppress stdout
+    ./bocker run "$1" "$2" > /dev/null
+    
+    # Get the process/container ID by parsing bocker ps output
+    ps="$(./bocker ps | grep "$2" | awk '{print $1}')"
+    echo "# Container ID for '$2': $ps"
+    
+    # Get the logs from the container
+    logs="$(./bocker logs "$ps")"
+    echo "# Logs output: $logs"
+    
+    # Check if expected string $3 is in the logs
+    if [[ "$logs" == *"$3"* ]]; then
+        echo "# Test PASSED: Found '$3' in logs"
+        echo 0
+    else
+        echo "# Test FAILED: '$3' not found in logs"
+        echo 1
+    fi
 }
 
+# Initialize a new image from ~/base-image and extract the image ID
 img="$(./bocker init ~/base-image | awk '{print $2}')"
-./bocker images | grep -qw "$img"
-[[ "$?" == 0 ]]
+echo "# Created image with ID: $img"
 
+# Verify the image appears in the images list
+./bocker images | grep -qw "$img"
+echo "# Image verification exit code: $?"
+[[ "$?" == 0 ]]
+echo "# Image successfully found in bocker images list"
+
+# Test 1: Run 'echo foo' and expect 'foo' in output
+echo "# Running test 1: echo foo"
 [[ "$(bocker_run_test "$img" 'echo foo' 'foo')" == 0 ]]
+echo "# Test 1 completed successfully"
+
+# Test 2: Run 'uname' and expect 'Linux' in output
+echo "# Running test 2: uname"
 [[ "$(bocker_run_test "$img" 'uname' 'Linux')" == 0 ]]
+echo "# Test 2 completed successfully"
+
+# Test 3: Check process isolation - cat should show PID 1
+echo "# Running test 3: process isolation check"
 [[ "$(bocker_run_test "$img" 'cat /proc/self/stat' '1 (cat)')" == 0 ]]
+echo "# Test 3 completed successfully - process isolation working"
+
+# Install iproute package in a container
+echo "# Installing iproute package..."
 ./bocker run "$img" yum install -y iproute
 ps="$(./bocker ps | grep 'yum install -y iproute' | awk '{print $1}')"
+echo "# Container ID for yum install: $ps"
+
+# Commit the changes to create a new image layer
 ./bocker commit "$ps" "$img"
+echo "# Committed changes to image $img"
+
+# Test 4: Verify network interface setup (should show veth1_ps_ interface)
+echo "# Running test 4: network interface check"
 [[ "$(bocker_run_test "$img" 'ip addr' 'veth1_ps_')" == 0 ]]
+echo "# Test 4 completed successfully - network interfaces configured"
+
+# Test 5: Test external connectivity to Google DNS
+echo "# Running test 5: external DNS connectivity"
 [[ "$(bocker_run_test "$img" 'ping -c 1 8.8.8.8' '0% packet loss')" == 0 ]]
+echo "# Test 5 completed successfully - can reach 8.8.8.8"
+
+# Test 6: Test DNS resolution and connectivity
+echo "# Running test 6: DNS resolution and connectivity"
 [[ "$(bocker_run_test "$img" 'ping -c 1 google.com' '0% packet loss')" == 0 ]]
+echo "# Test 6 completed successfully - DNS resolution working"
+
+echo "# All tests completed successfully!"

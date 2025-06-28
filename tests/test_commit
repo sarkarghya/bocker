@@ -1,21 +1,54 @@
 #!/usr/bin/env bash
 set -o errexit -o nounset -o pipefail
 
+# Initialize a new container from base image and capture the image ID
 img="$(./bocker init ~/base-image | awk '{print $2}')"
+echo "Created image: $img"
+
+# Verify the image exists in the image list
 ./bocker images | grep -qw "$img"
 [[ "$?" == 0 ]]
+echo "Image $img verified in image list"
 
+# Test 1: Run wget command (should fail since wget is not installed)
+echo "Testing wget command (should fail)..."
 ./bocker run "$img" wget
 ps="$(./bocker ps | grep 'wget' | awk '{print $1}')"
-logs="$(./bocker logs "$ps")"
-./bocker rm "$ps"
-[[ "$logs" == *"wget: command not found"* ]]
+echo "Container process ID: $ps"
 
+# Get logs from the wget test
+logs="$(./bocker logs "$ps")"
+echo "Logs from wget test: $logs"
+
+# Clean up the failed container
+./bocker rm "$ps"
+echo "Removed container $ps"
+
+# Verify that wget command failed as expected
+[[ "$logs" == *"wget: command not found"* ]]
+echo "Confirmed: wget command not found (as expected)"
+
+# Test 2: Install wget using yum
+echo "Installing wget using yum..."
 ./bocker run "$img" yum install -y wget
 ps="$(./bocker ps | grep 'yum install -y wget' | awk '{print $1}')"
-./bocker commit "$ps" "$img"
+echo "Yum install process ID: $ps"
 
+# Commit the changes to create a new image with wget installed
+./bocker commit "$ps" "$img"
+echo "Committed changes to image $img (wget now installed)"
+
+# Test 3: Use wget to fetch data from httpbin.org
+echo "Testing wget with HTTP request..."
 ./bocker run "$img" wget -qO- http://httpbin.org/get
 ps="$(./bocker ps | grep 'wget -qO- http://httpbin.org/get' | awk '{print $1}')"
+echo "Wget HTTP request process ID: $ps"
+
+# Get logs from the successful wget command
 logs="$(./bocker logs "$ps")"
+echo "Logs from wget HTTP request:"
+echo "$logs"
+
+# Verify that the HTTP request was successful
 [[ "$logs" == *'http://httpbin.org/get'* ]]
+echo "Success: wget successfully fetched data from http://httpbin.org/get"
