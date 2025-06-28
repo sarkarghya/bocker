@@ -81,11 +81,13 @@ function bocker_run() { #HELP Create a container:\nBOCKER run <image_id> <comman
 	: "${BOCKER_MEM_LIMIT:=512}" && echo "$((BOCKER_MEM_LIMIT * 1000000))" > "/sys/fs/cgroup/$uuid/memory.max" 2>/dev/null || true
 	echo "+cpu +memory" > "/sys/fs/cgroup/$uuid/cgroup.subtree_control" 2>/dev/null || true	
 	(
-		echo $$ > "/sys/fs/cgroup/$uuid/cgroup.procs" 2>/dev/null || true
 		ip netns exec netns_"$uuid" \
 		unshare -fmuip --mount-proc \
-		chroot "$btrfs_path/$uuid" \
-		/bin/sh -c "/bin/mount -t proc proc /proc && $cmd"
+		bash -c "
+			# Move the new PID 1 process into the container's cgroup
+			echo 1 > /sys/fs/cgroup/$uuid/cgroup.procs 2>/dev/null || true
+			chroot $btrfs_path/$uuid /bin/sh -c '/bin/mount -t proc proc /proc && $cmd'
+		"
 	) 2>&1 | tee "$btrfs_path/$uuid/$uuid.log" || true
 	ip link del dev veth0_"$uuid"
 	ip netns del netns_"$uuid"
