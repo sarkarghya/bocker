@@ -75,15 +75,18 @@ function bocker_run() { #HELP Create a container:\nBOCKER run <image_id> <comman
 	btrfs subvolume snapshot "$btrfs_path/$1" "$btrfs_path/$uuid" > /dev/null
 	echo 'nameserver 8.8.8.8' > "$btrfs_path/$uuid"/etc/resolv.conf
 	echo "$cmd" > "$btrfs_path/$uuid/$uuid.cmd"
-	cgcreate -g "$cgroups:/$uuid"
-	: "${BOCKER_CPU_SHARE:=512}" && cgset -r cpu.weight="$BOCKER_CPU_SHARE" "$uuid" 2>/dev/null || true
-	: "${BOCKER_MEM_LIMIT:=512}" && cgset -r memory.max="$((BOCKER_MEM_LIMIT * 1000000))" "$uuid" 2>/dev/null || true
-	cgexec -g "$cgroups:$uuid" \
+	# cgroups v2 setup
+	mkdir -p "/sys/fs/cgroup/$uuid"
+	: "${BOCKER_CPU_SHARE:=100}" && echo "$BOCKER_CPU_SHARE" > "/sys/fs/cgroup/$uuid/cpu.weight" 2>/dev/null || true
+	: "${BOCKER_MEM_LIMIT:=512}" && echo "$((BOCKER_MEM_LIMIT * 1000000))" > "/sys/fs/cgroup/$uuid/memory.max" 2>/dev/null || true
+	echo "+cpu +memory" > "/sys/fs/cgroup/$uuid/cgroup.subtree_control" 2>/dev/null || true	
+	(
+		echo $$ > "/sys/fs/cgroup/$uuid/cgroup.procs" 2>/dev/null || true
 		ip netns exec netns_"$uuid" \
 		unshare -fmuip --mount-proc \
 		chroot "$btrfs_path/$uuid" \
-		/bin/sh -c "/bin/mount -t proc proc /proc && $cmd" \
-		2>&1 | tee "$btrfs_path/$uuid/$uuid.log" || true
+		/bin/sh -c "/bin/mount -t proc proc /proc && $cmd"
+	) 2>&1 | tee "$btrfs_path/$uuid/$uuid.log" || true
 	ip link del dev veth0_"$uuid"
 	ip netns del netns_"$uuid"
 }
