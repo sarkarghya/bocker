@@ -5,6 +5,8 @@ set -o errexit -o nounset -o pipefail
 img="$(./bocker init ~/base-image | awk '{print $2}')"
 echo "DEBUG: Created image: $img"
 
+sleep 1
+
 # Check if the image exists in the image list
 echo "DEBUG: Checking if image exists in image list..."
 ./bocker images | grep -qw "$img"
