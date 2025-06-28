@@ -11,10 +11,15 @@ echo "DEBUG: Checking if image exists in image list..."
 [[ "$?" == 0 ]]
 echo "DEBUG: Image verification passed"
 
-echo "# Installing procps-ng package..."
+# Install procps-ng package to make ps command available
+echo "DEBUG: Installing procps-ng package..."
 ./bocker run "$img" yum install -y procps-ng
-ps="$(./bocker ps | grep 'yum install -y procps-ng' | awk '{print $1}')"
-echo "# Container ID for yum install: $ps"
+install_ps="$(./bocker ps | grep 'yum install -y procps-ng' | awk '{print $1}')"
+echo "DEBUG: Container ID for procps-ng install: $install_ps"
+
+# Commit the changes to create a new image with ps installed
+./bocker commit "$install_ps" "$img"
+echo "DEBUG: Committed procps-ng installation to image $img"
 
 # ▼ ▼ ▼ Race condition waiting to happen ▼ ▼ ▼
 echo "DEBUG: Starting background container with 'sleep 5 && ps aux'"
