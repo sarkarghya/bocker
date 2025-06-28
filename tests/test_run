@@ -18,7 +18,10 @@ img="$(./bocker init ~/base-image | awk '{print $2}')"
 
 [[ "$(bocker_run_test "$img" 'echo foo' 'foo')" == 0 ]]
 [[ "$(bocker_run_test "$img" 'uname' 'Linux')" == 0 ]]
-[[ "$(bocker_run_test "$img" 'cat /proc/self/stat' '3 (cat)')" == 0 ]]
+[[ "$(bocker_run_test "$img" 'cat /proc/self/stat' '1 (cat)')" == 0 ]]
+./bocker run "$img" yum install -y iproute
+ps="$(./bocker ps | grep 'yum install -y iproute' | awk '{print $1}')"
+./bocker commit "$ps" "$img"
 [[ "$(bocker_run_test "$img" 'ip addr' 'veth1_ps_')" == 0 ]]
 [[ "$(bocker_run_test "$img" 'ping -c 1 8.8.8.8' '0% packet loss')" == 0 ]]
 [[ "$(bocker_run_test "$img" 'ping -c 1 google.com' '0% packet loss')" == 0 ]]
