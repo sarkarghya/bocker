@@ -62,6 +62,8 @@ function bocker_run() { #HELP Create a container:\nBOCKER run <image_id> <comman
 	[[ "$(bocker_check "$1")" == 1 ]] && echo "No image named '$1' exists" && exit 1
 	[[ "$(bocker_check "$uuid")" == 0 ]] && echo "UUID conflict, retrying..." && bocker_run "$@" && return
 	cmd="${@:2}" && ip="$(echo "${uuid: -3}" | sed 's/0//g')" && mac="${uuid: -3:1}:${uuid: -2}"
+	
+	# Network setup (unchanged)
 	ip link add dev veth0_"$uuid" type veth peer name veth1_"$uuid"
 	ip link set dev veth0_"$uuid" up
 	ip link set veth0_"$uuid" master bridge0
@@ -72,23 +74,46 @@ function bocker_run() { #HELP Create a container:\nBOCKER run <image_id> <comman
 	ip netns exec netns_"$uuid" ip addr add 10.0.0."$ip"/24 dev veth1_"$uuid"
 	ip netns exec netns_"$uuid" ip link set dev veth1_"$uuid" up
 	ip netns exec netns_"$uuid" ip route add default via 10.0.0.1
+	
+	# Filesystem setup (unchanged)
 	btrfs subvolume snapshot "$btrfs_path/$1" "$btrfs_path/$uuid" > /dev/null
 	echo 'nameserver 8.8.8.8' > "$btrfs_path/$uuid"/etc/resolv.conf
 	echo "$cmd" > "$btrfs_path/$uuid/$uuid.cmd"
+	
 	# cgroups v2 setup
-	mkdir -p "/sys/fs/cgroup/$uuid"
-	: "${BOCKER_CPU_SHARE:=100}" && echo "$BOCKER_CPU_SHARE" > "/sys/fs/cgroup/$uuid/cpu.weight" 2>/dev/null || true
-	: "${BOCKER_MEM_LIMIT:=512}" && echo "$((BOCKER_MEM_LIMIT * 1000000))" > "/sys/fs/cgroup/$uuid/memory.max" 2>/dev/null || true
-	echo "+cpu +memory" > "/sys/fs/cgroup/$uuid/cgroup.subtree_control" 2>/dev/null || true	
+	cgroup_path="/sys/fs/cgroup/bocker/$uuid"
+	mkdir -p "$cgroup_path"
+	
+	# Enable controllers
+	echo "+cpu +memory" > "$cgroup_path/cgroup.subtree_control" 2>/dev/null || true
+	
+	# Set CPU limits (convert shares to weight: shares * 10000 / 1024)
+	: "${BOCKER_CPU_SHARE:=512}"
+	cpu_weight=$((BOCKER_CPU_SHARE * 10000 / 1024))
+	echo "$cpu_weight" > "$cgroup_path/cpu.weight"
+	
+	# Set memory limits
+	: "${BOCKER_MEM_LIMIT:=512}"
+	echo "$((BOCKER_MEM_LIMIT * 1000000))" > "$cgroup_path/memory.max"
+	
+	# Function to run command in cgroup v2
+	run_in_cgroup() {
+		# Move current process to cgroup
+		echo $$ > "$cgroup_path/cgroup.procs"
+		# Execute the command
+		exec "$@"
+	}
+	
+	# Run the container command in cgroup v2
 	(
+		run_in_cgroup \
 		ip netns exec netns_"$uuid" \
 		unshare -fmuip --mount-proc \
-		bash -c "
-			# Move the new PID 1 process into the container's cgroup
-			echo 1 > /sys/fs/cgroup/$uuid/cgroup.procs 2>/dev/null || true
-			chroot $btrfs_path/$uuid /bin/sh -c '/bin/mount -t proc proc /proc && $cmd'
-		"
+		chroot "$btrfs_path/$uuid" \
+		/bin/sh -c "/bin/mount -t proc proc /proc && $cmd"
 	) 2>&1 | tee "$btrfs_path/$uuid/$uuid.log" || true
+	
+	# Cleanup network
 	ip link del dev veth0_"$uuid"
 	ip netns del netns_"$uuid"
 }
