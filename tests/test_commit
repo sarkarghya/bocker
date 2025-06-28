@@ -25,8 +25,8 @@ echo "Logs from wget test: $logs"
 echo "Removed container $ps"
 
 # Verify that wget command failed as expected
-[[ "$logs" == *"wget: not found"* ]]
-echo "Confirmed: wget not found (as expected)"
+[[ "$logs" == *"wget: command not found"* ]]
+echo "Confirmed: wget command not found (as expected)"
 
 # Test 2: Install wget using yum
 echo "Installing wget using yum..."
