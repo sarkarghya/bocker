@@ -122,37 +122,31 @@ function bocker_run() { #HELP Create a container:\nBOCKER run <image_id> <comman
 	
 	# Run the container command in cgroup v2
 	# Create a temporary script to handle the cgroup assignment and command execution
-	cat > "/tmp/bocker_run_$uuid.sh" << 'EOF'
-#!/bin/bash
-# Debug: Show current PID and cgroup
-echo "DEBUG: Process PID: $" >&2
-echo "DEBUG: Current cgroup: $(cat /proc/self/cgroup)" >&2
-
-# Move the current process to our cgroup
-CGROUP_PATH="$1"
-CMD="$2"
-BTRFS_PATH="$3"
-UUID="$4"
-
-echo "DEBUG: Moving PID $ to cgroup $CGROUP_PATH" >&2
-if echo $ > "$CGROUP_PATH/cgroup.procs" 2>/dev/null; then
-    echo "DEBUG: Successfully moved to cgroup" >&2
-    echo "DEBUG: New cgroup: $(cat /proc/self/cgroup)" >&2
-else
-    echo "DEBUG: Failed to move to cgroup" >&2
-fi
-
-# Now chroot and run the command
-chroot "$BTRFS_PATH/$UUID" /bin/sh -c "/bin/mount -t proc proc /proc && $CMD"
+	# Inner script that runs inside the chroot
+	inner_script="bocker_inner.sh"
+	cat > "$btrfs_path/$uuid/$inner_script" << EOF
+#!/bin/sh
+mount -t proc proc /proc
+exec $cmd
 EOF
-	chmod +x "/tmp/bocker_run_$uuid.sh"
-	
+
+	chmod +x "$btrfs_path/$uuid/$inner_script"
+
+	# Move the current shell process into the cgroup BEFORE unshare
+	# Fork a subshell that will run inside netns + chroot
 	(
-		ip netns exec netns_"$uuid" unshare -fmuip --mount-proc "/tmp/bocker_run_$uuid.sh" "$cgroup_path" "$cmd" "$btrfs_path" "$uuid"
+		echo $$ > "$cgroup_path/cgroup.procs" 2>/dev/null || {
+			echo "ERROR: Failed to move to cgroup: $cgroup_path" >&2
+			exit 1
+		}
+
+		ip netns exec netns_"$uuid" unshare -fmuip --mount-proc \
+			chroot "$btrfs_path/$uuid" /$inner_script
 	) 2>&1 | tee "$btrfs_path/$uuid/$uuid.log" || true
+
 	
 	# Clean up the temporary script
-	rm -f "/tmp/bocker_run_$uuid.sh"
+	rm -f "$btrfs_path/$uuid/$inner_script"
 	
 	# Cleanup network
 	ip link del dev veth0_"$uuid"
