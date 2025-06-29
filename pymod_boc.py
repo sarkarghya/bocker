@@ -3,7 +3,6 @@ import subprocess
 import sys
 import os
 import tempfile
-import uuid
 import json
 import shutil
 import time
@@ -93,8 +92,8 @@ class Bocker:
             return False
 
     def _generate_uuid(self, prefix="ps_"):
-        """Generate UUID using Python hexadecimal format"""
-        return f"{prefix}{uuid.uuid4().hex[:8]}"
+        """Generate UUID using Python instead of bash shuf"""
+        return f"{prefix}{random.randint(42002, 42254)}"
 
     def _directory_exists(self, directory):
         """Check if directory exists using Python"""
@@ -168,7 +167,6 @@ class Bocker:
         import json
         import tempfile
         import shutil
-        import uuid
         from dotenv import load_dotenv
         
         if len(args) < 2:
@@ -293,7 +291,7 @@ class Bocker:
             # Step 4: Create bocker image using btrfs
             print("Creating bocker image...")
             
-            # Generate unique image ID using consistent hex format
+            # Generate unique image ID using consistent number format
             img_uuid = self._generate_uuid("img_")
             
             bash_script = f"""
@@ -309,8 +307,7 @@ class Bocker:
             # Check if image already exists
             if [[ "$(bocker_check "$img_uuid")" == 0 ]]; then
                 echo "Image UUID conflict, regenerating..."
-                # Generate new hex UUID in bash (fallback)
-                img_uuid="img_$(openssl rand -hex 4)"
+                img_uuid="img_$(shuf -i 42002-42254 -n 1)"
             fi
             
             # Create btrfs subvolume
@@ -363,17 +360,17 @@ class Bocker:
             return 1
         
         # Generate UUID using Python
-        uuid_val = self._generate_uuid("img_")
+        uuid = self._generate_uuid("img_")
         
         # Check if UUID conflicts using Python
-        if self._bocker_check(uuid_val):
+        if self._bocker_check(uuid):
             print("UUID conflict, retrying...", file=sys.stderr)
             return self.init(args)
         
         bash_script = f"""
         set -o errexit -o nounset -o pipefail
         btrfs_path='{self.btrfs_path}'
-        uuid='{uuid_val}'
+        uuid='{uuid}'
         directory='{directory}'
         
         btrfs subvolume create "$btrfs_path/$uuid" > /dev/null
@@ -456,23 +453,22 @@ class Bocker:
             return 1
         
         # Generate UUID using Python
-        uuid_val = self._generate_uuid("ps_")
+        uuid = self._generate_uuid("ps_")
         
         # Check UUID conflict using Python
-        if self._bocker_check(uuid_val):
+        if self._bocker_check(uuid):
             print("UUID conflict, retrying...", file=sys.stderr)
             return self.run(args)
         
-        # Calculate IP and MAC using Python - extract last 3 hex chars for networking
-        hex_suffix = uuid_val[-6:]  # Get last 6 hex chars
-        ip_suffix = str(int(hex_suffix[-3:], 16) % 253 + 1)  # Convert to decimal, ensure 1-253 range
-        mac_suffix = f"{hex_suffix[-4:-2]}:{hex_suffix[-2:]}"
+        # Calculate IP and MAC using Python
+        ip_suffix = uuid[-3:].replace('0', '') or '1'
+        mac_suffix = f"{uuid[-3:-2]}:{uuid[-2:]}"
         
         bash_script = f"""
         set -o errexit -o nounset -o pipefail; shopt -s nullglob
         btrfs_path='{self.btrfs_path}'
         cgroups='{self.cgroups}'
-        uuid='{uuid_val}'
+        uuid='{uuid}'
         image_id='{image_id}'
         cmd='{command}'
         ip='{ip_suffix}'
