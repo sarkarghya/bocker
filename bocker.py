@@ -154,7 +154,7 @@ class Bocker:
             if source_file.exists():
                 with open(source_file, 'r') as f:
                     source = f.read().strip()
-                print(f"{img_name}\t\t{source}")
+                print("{}\t\t{}".format(img_name, source))
 
     def bocker_ps(self):
         """List containers"""
@@ -163,11 +163,11 @@ class Bocker:
         btrfs_path = Path(self.btrfs_path)
         for ps_path in btrfs_path.glob("ps_*"):
             ps_name = ps_path.name
-            cmd_file = ps_path / f"{ps_name}.cmd"
+            cmd_file = ps_path / "{}.cmd".format(ps_name)
             if cmd_file.exists():
                 with open(cmd_file, 'r') as f:
                     command = f.read().strip()
-                print(f"{ps_name}\t\t{command}")
+                print("{}\t\t{}".format(ps_name, command))
 
     def bocker_run(self, image_id, *command):
         """Create a container"""
@@ -303,8 +303,8 @@ chroot '{}/{}' \
 
     def bocker_help(self, script_name):
         """Display help message"""
-        help_text = f"""
-{script_name} - A simple container runtime
+        help_text = """
+{} - A simple container runtime
 
 Commands:
     init               Create an image from a directory
@@ -317,7 +317,7 @@ Commands:
     logs          View logs from a container
     commit   Commit a container to an image
     help                        Display this message
-        """
+        """.format(script_name)
         print(help_text)
 
 def main():
@@ -366,8 +366,8 @@ class BockerTestSuite:
     def log_test(self, test_name, passed, message=""):
         """Log test results"""
         status = "PASS" if passed else "FAIL"
-        self.test_results.append(f"{test_name}: {status} {message}")
-        print(f"[{status}] {test_name}: {message}")
+        self.test_results.append("[{}] {}: {}".format(status, test_name, message))
+        print("[{}] {}: {}".format(status, test_name, message))
         
     def teardown(self):
         """Clean up all images and containers"""
@@ -376,7 +376,7 @@ class BockerTestSuite:
         # Get all images
         try:
             result = subprocess.run(['python3', 'bocker.py', 'images'], 
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
             for line in result.stdout.split('\n')[1:]:  # Skip header
                 if line.strip() and 'img_' in line:
                     img_id = line.split()[0]  # Take first element
@@ -388,7 +388,7 @@ class BockerTestSuite:
         # Get all containers
         try:
             result = subprocess.run(['python3', 'bocker.py', 'ps'], 
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
             for line in result.stdout.split('\n')[1:]:  # Skip header
                 if line.strip() and 'ps_' in line:
                     ps_id = line.split()[0]  # Take first element
@@ -400,31 +400,31 @@ class BockerTestSuite:
     def test_images_header(self):
         """Test that images command shows correct header"""
         result = subprocess.run(['python3', 'bocker.py', 'images'], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         header = result.stdout.split('\n')
         expected = "IMAGE_ID\t\tSOURCE"
         passed = header and expected in header
-        self.log_test("test_images_header", passed, f"Expected: {expected}")
+        self.log_test("test_images_header", passed, "Expected: {}".format(expected))
         return passed
         
     def test_ps_header(self):
         """Test that ps command shows correct header"""
         result = subprocess.run(['python3', 'bocker.py', 'ps'], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         header = result.stdout.split('\n')
         expected = "CONTAINER_ID\t\tCOMMAND"
         passed = header and expected in header
-        self.log_test("test_ps_header", passed, f"Expected: {expected}")
+        self.log_test("test_ps_header", passed, "Expected: {}".format(expected))
         return passed
         
     def test_init(self):
         """Test image initialization"""
         if not os.path.exists(self.base_image_path):
-            self.log_test("test_init", False, f"Base image path {self.base_image_path} does not exist")
+            self.log_test("test_init", False, "Base image path {} does not exist".format(self.base_image_path))
             return False
             
         result = subprocess.run(['python3', 'bocker.py', 'init', self.base_image_path], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         passed = result.stdout.startswith('Created: img_')
         self.log_test("test_init", passed, result.stdout.strip())
         return passed
@@ -432,12 +432,12 @@ class BockerTestSuite:
     def bocker_run_test(self, img_id, command, expected_output):
         """Helper function to test bocker container runs"""
         subprocess.run(['python3', 'bocker.py', 'run', img_id, command], 
-                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         time.sleep(3)
         
         # Get container ID
         result = subprocess.run(['python3', 'bocker.py', 'ps'], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         ps_id = None
         for line in result.stdout.split('\n')[1:]:
             if command in line:
@@ -449,7 +449,7 @@ class BockerTestSuite:
             
         # Get logs
         result = subprocess.run(['python3', 'bocker.py', 'logs', ps_id], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         logs = result.stdout
         
         return expected_output in logs
@@ -458,7 +458,7 @@ class BockerTestSuite:
         """Comprehensive test of run functionality"""
         # Initialize image
         result = subprocess.run(['python3', 'bocker.py', 'init', self.base_image_path], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         if not result.stdout.startswith('Created: img_'):
             self.log_test("test_run_comprehensive", False, "Failed to create image")
             return False
@@ -468,7 +468,7 @@ class BockerTestSuite:
         
         # Verify image exists
         result = subprocess.run(['python3', 'bocker.py', 'images'], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         if img_id not in result.stdout:
             self.log_test("test_run_comprehensive", False, "Image not found in images list")
             return False
@@ -491,7 +491,7 @@ class BockerTestSuite:
         """Test the complete commit workflow"""
         # Initialize image
         result = subprocess.run(['python3', 'bocker.py', 'init', self.base_image_path], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         if not result.stdout.startswith('Created: img_'):
             self.log_test("test_commit_workflow", False, "Failed to create image")
             return False
@@ -501,11 +501,11 @@ class BockerTestSuite:
         
         # Test wget command (should fail)
         subprocess.run(['python3', 'bocker.py', 'run', img_id, 'wget'], 
-                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         
         # Get container ID for wget test
         result = subprocess.run(['python3', 'bocker.py', 'ps'], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         wget_ps = None
         for line in result.stdout.split('\n')[1:]:
             if 'wget' in line:
@@ -515,7 +515,7 @@ class BockerTestSuite:
         if wget_ps:
             # Check logs
             result = subprocess.run(['python3', 'bocker.py', 'logs', wget_ps], 
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
             wget_failed = "command not found" in result.stdout or "not found" in result.stdout
             self.log_test("test_wget_initially_fails", wget_failed, "wget should fail initially")
             
@@ -524,11 +524,11 @@ class BockerTestSuite:
         
         # Install wget
         subprocess.run(['python3', 'bocker.py', 'run', img_id, 'yum', 'install', '-y', 'wget'], 
-                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         
         # Get container ID for yum install
         result = subprocess.run(['python3', 'bocker.py', 'ps'], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         yum_ps = None
         for line in result.stdout.split('\n')[1:]:
             if 'yum install -y wget' in line:
@@ -541,15 +541,15 @@ class BockerTestSuite:
             
         # Commit changes
         subprocess.run(['python3', 'bocker.py', 'commit', yum_ps, img_id], 
-                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         
         # Test wget again (should work now)
         subprocess.run(['python3', 'bocker.py', 'run', img_id, 'wget', '-qO-', 'http://httpbin.org/get'], 
-                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         
         # Get container ID for wget test
         result = subprocess.run(['python3', 'bocker.py', 'ps'], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         wget_success_ps = None
         for line in result.stdout.split('\n')[1:]:
             if 'wget -qO- http://httpbin.org/get' in line:
@@ -558,7 +558,7 @@ class BockerTestSuite:
                 
         if wget_success_ps:
             result = subprocess.run(['python3', 'bocker.py', 'logs', wget_success_ps], 
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
             wget_success = 'http://httpbin.org/get' in result.stdout
             self.log_test("test_wget_after_install", wget_success, "wget should work after install")
             return wget_success
@@ -569,7 +569,7 @@ class BockerTestSuite:
         """Test pulling images from Docker Hub"""
         # Pull CentOS 7
         result = subprocess.run(['python3', 'bocker.py', 'pull', 'centos', '7'], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         
         if 'Created: img_' not in result.stdout:
             self.log_test("test_pull_centos", False, "Failed to pull CentOS image")
@@ -579,11 +579,11 @@ class BockerTestSuite:
         
         # Test CentOS release
         subprocess.run(['python3', 'bocker.py', 'run', centos_img, 'cat', '/etc/redhat-release'], 
-                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         
         # Get container and check logs
         result = subprocess.run(['python3', 'bocker.py', 'ps'], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         ps_id = None
         for line in result.stdout.split('\n')[1:]:
             if 'cat /etc/redhat-release' in line:
@@ -592,7 +592,7 @@ class BockerTestSuite:
                 
         if ps_id:
             result = subprocess.run(['python3', 'bocker.py', 'logs', ps_id], 
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
             centos_test = 'CentOS Linux release 7' in result.stdout
             self.log_test("test_pull_centos", centos_test, "CentOS version check")
             
@@ -606,7 +606,7 @@ class BockerTestSuite:
         """Test removal of images and containers"""
         # Create image
         result = subprocess.run(['python3', 'bocker.py', 'init', self.base_image_path], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         if not result.stdout.startswith('Created: img_'):
             self.log_test("test_rm_functionality", False, "Failed to create image")
             return False
@@ -614,13 +614,13 @@ class BockerTestSuite:
         img_id = result.stdout.split()[-1]
         
         # Create container
-        cmd = f"echo {random.randint(1000, 9999)}"
+        cmd = "echo {}".format(random.randint(1000, 9999))
         subprocess.run(['python3', 'bocker.py', 'run', img_id] + cmd.split(), 
-                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         
         # Get container ID
         result = subprocess.run(['python3', 'bocker.py', 'ps'], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         ps_id = None
         for line in result.stdout.split('\n')[1:]:
             if cmd in line:
@@ -633,11 +633,11 @@ class BockerTestSuite:
             
         # Verify they exist
         result = subprocess.run(['python3', 'bocker.py', 'images'], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         img_exists_before = img_id in result.stdout
         
         result = subprocess.run(['python3', 'bocker.py', 'ps'], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         ps_exists_before = cmd in result.stdout
         
         # Remove them
@@ -646,19 +646,20 @@ class BockerTestSuite:
         
         # Verify they're gone
         result = subprocess.run(['python3', 'bocker.py', 'images'], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         img_exists_after = img_id in result.stdout
         
         result = subprocess.run(['python3', 'bocker.py', 'ps'], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         ps_exists_after = cmd in result.stdout
         
         success = (img_exists_before and ps_exists_before and 
                   not img_exists_after and not ps_exists_after)
         
         self.log_test("test_rm_functionality", success, 
-                     f"Before: img={img_exists_before}, ps={ps_exists_before}; "
-                     f"After: img={img_exists_after}, ps={ps_exists_after}")
+                     "Before: img={}, ps={}; After: img={}, ps={}".format(
+                         img_exists_before, ps_exists_before,
+                         img_exists_after, ps_exists_after))
         
         return success
         
@@ -687,13 +688,13 @@ class BockerTestSuite:
                 if test():
                     passed += 1
             except Exception as e:
-                self.log_test(test.__name__, False, f"Exception: {e}")
+                self.log_test(test.__name__, False, "Exception: {}".format(e))
                 
         # Final teardown
         self.teardown()
         
         print("=" * 50)
-        print(f"Test Results: {passed}/{total} tests passed")
+        print("Test Results: {}/{} tests passed".format(passed, total))
         print("=" * 50)
         
         for result in self.test_results:
