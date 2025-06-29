@@ -52,73 +52,73 @@ class Bocker:
     def bocker_check(self, name):
         """Check if a subvolume exists"""
         try:
-            bash_command(f"btrfs subvolume list '{self.btrfs_path}' | grep -qw '{name}'")
+            bash_command("btrfs subvolume list '{}' | grep -qw '{}'".format(self.btrfs_path, name))
             return 0
         except:
             return 1
 
     def bocker_init(self, directory):
         """Create an image from a directory"""
-        uuid_val = f"img_{random.randint(42002, 42254)}"
+        uuid_val = "img_{}".format(random.randint(42002, 42254))
         
         if not os.path.isdir(directory):
-            print(f"No directory named '{directory}' exists")
+            print("No directory named '{}' exists".format(directory))
             return None
             
         if self.bocker_check(uuid_val) == 0:
             return self.bocker_run(directory)
             
         # Create btrfs subvolume
-        bash_command(f"btrfs subvolume create '{self.btrfs_path}/{uuid_val}' > /dev/null")
+        bash_command("btrfs subvolume create '{}/{}' > /dev/null".format(self.btrfs_path, uuid_val))
         
         # Copy files with reflink
-        bash_command(f"cp -rf --reflink=auto '{directory}'/* '{self.btrfs_path}/{uuid_val}' > /dev/null")
+        bash_command("cp -rf --reflink=auto '{}'/* '{}/{}' > /dev/null".format(directory, self.btrfs_path, uuid_val))
         
         # Create img.source file if it doesn't exist
-        img_source_path = f"{self.btrfs_path}/{uuid_val}/img.source"
+        img_source_path = "{}/{}/img.source".format(self.btrfs_path, uuid_val)
         if not os.path.exists(img_source_path):
             with open(img_source_path, 'w') as f:
                 f.write(directory)
                 
-        print(f"Created: {uuid_val}")
+        print("Created: {}".format(uuid_val))
         return uuid_val
 
     def bocker_pull(self, name, tag):
         """Pull an image from Docker Hub"""
         tmp_uuid = str(uuid.uuid4())
-        tmp_dir = f"/tmp/{tmp_uuid}"
+        tmp_dir = "/tmp/{}".format(tmp_uuid)
         os.makedirs(tmp_dir)
         
         try:
             # Download image (this will show progress)
-            subprocess.run(['./download-frozen-image-v2.sh', tmp_dir, f'{name}:{tag}'], 
+            subprocess.run(['./download-frozen-image-v2.sh', tmp_dir, '{}:{}'.format(name, tag)], 
                          stdout=None, stderr=subprocess.DEVNULL)
             
             # Remove repositories
-            repositories_path = f"{tmp_dir}/repositories"
+            repositories_path = "{}/repositories".format(tmp_dir)
             if os.path.exists(repositories_path):
                 shutil.rmtree(repositories_path)
             
             # Extract layers
-            manifest_path = f"{tmp_dir}/manifest.json"
+            manifest_path = "{}/manifest.json".format(tmp_dir)
             with open(manifest_path, 'r') as f:
                 manifest = json.load(f)
                 
             for item in manifest:
                 for layer in item.get('Layers', []):
-                    bash_command(f"tar xf '{tmp_dir}/{layer}' -C '{tmp_dir}'")
-                    os.remove(f"{tmp_dir}/{layer}")
+                    bash_command("tar xf '{}/{}' -C '{}'".format(tmp_dir, layer, tmp_dir))
+                    os.remove("{}/{}".format(tmp_dir, layer))
                     
                 # Remove config files
                 config = item.get('Config')
                 if config:
-                    config_path = f"{tmp_dir}/{config}"
+                    config_path = "{}/{}".format(tmp_dir, config)
                     if os.path.exists(config_path):
                         os.remove(config_path)
             
             # Create img.source
-            with open(f"{tmp_dir}/img.source", 'w') as f:
-                f.write(f"{name}:{tag}")
+            with open("{}/img.source".format(tmp_dir), 'w') as f:
+                f.write("{}:{}".format(name, tag))
                 
             return self.bocker_init(tmp_dir)
             
@@ -129,19 +129,19 @@ class Bocker:
     def bocker_rm(self, container_id):
         """Delete an image or container"""
         if self.bocker_check(container_id) == 1:
-            print(f"No container named '{container_id}' exists")
+            print("No container named '{}' exists".format(container_id))
             sys.exit(1)
             
         # Delete btrfs subvolume
-        bash_command(f"btrfs subvolume delete '{self.btrfs_path}/{container_id}' > /dev/null")
+        bash_command("btrfs subvolume delete '{}/{}' > /dev/null".format(self.btrfs_path, container_id))
         
         # Delete cgroup
         try:
-            bash_command(f"cgdelete -g '{self.cgroups}:/{container_id}' &> /dev/null")
+            bash_command("cgdelete -g '{}:/{}' &> /dev/null".format(self.cgroups, container_id))
         except:
             pass
             
-        print(f"Removed: {container_id}")
+        print("Removed: {}".format(container_id))
 
     def bocker_images(self):
         """List images"""
@@ -171,10 +171,10 @@ class Bocker:
 
     def bocker_run(self, image_id, *command):
         """Create a container"""
-        uuid_val = f"ps_{random.randint(42002, 42254)}"
+        uuid_val = "ps_{}".format(random.randint(42002, 42254))
         
         if self.bocker_check(image_id) == 1:
-            print(f"No image named '{image_id}' exists")
+            print("No image named '{}' exists".format(image_id))
             sys.exit(1)
             
         if self.bocker_check(uuid_val) == 0:
@@ -183,58 +183,58 @@ class Bocker:
             
         cmd = ' '.join(command)
         ip_suffix = uuid_val[-3:].lstrip('0') or '1'
-        mac_suffix = f"{uuid_val[-3:-2]}:{uuid_val[-2:]}"
+        mac_suffix = "{}:{}".format(uuid_val[-3:-2], uuid_val[-2:])
         
         try:
             # Network setup
-            bash_command(f"ip link add dev veth0_{uuid_val} type veth peer name veth1_{uuid_val}")
-            bash_command(f"ip link set dev veth0_{uuid_val} up")
-            bash_command(f"ip link set veth0_{uuid_val} master bridge0")
-            bash_command(f"ip netns add netns_{uuid_val}")
-            bash_command(f"ip link set veth1_{uuid_val} netns netns_{uuid_val}")
-            bash_command(f"ip netns exec netns_{uuid_val} ip link set dev lo up")
-            bash_command(f"ip netns exec netns_{uuid_val} ip link set veth1_{uuid_val} address 02:42:ac:11:00:{mac_suffix}")
-            bash_command(f"ip netns exec netns_{uuid_val} ip addr add 10.0.0.{ip_suffix}/24 dev veth1_{uuid_val}")
-            bash_command(f"ip netns exec netns_{uuid_val} ip link set dev veth1_{uuid_val} up")
-            bash_command(f"ip netns exec netns_{uuid_val} ip route add default via 10.0.0.1")
+            bash_command("ip link add dev veth0_{} type veth peer name veth1_{}".format(uuid_val, uuid_val))
+            bash_command("ip link set dev veth0_{} up".format(uuid_val))
+            bash_command("ip link set veth0_{} master bridge0".format(uuid_val))
+            bash_command("ip netns add netns_{}".format(uuid_val))
+            bash_command("ip link set veth1_{} netns netns_{}".format(uuid_val, uuid_val))
+            bash_command("ip netns exec netns_{} ip link set dev lo up".format(uuid_val))
+            bash_command("ip netns exec netns_{} ip link set veth1_{} address 02:42:ac:11:00:{}".format(uuid_val, uuid_val, mac_suffix))
+            bash_command("ip netns exec netns_{} ip addr add 10.0.0.{}/24 dev veth1_{}".format(uuid_val, ip_suffix, uuid_val))
+            bash_command("ip netns exec netns_{} ip link set dev veth1_{} up".format(uuid_val, uuid_val))
+            bash_command("ip netns exec netns_{} ip route add default via 10.0.0.1".format(uuid_val))
             
             # Filesystem setup
-            bash_command(f"btrfs subvolume snapshot '{self.btrfs_path}/{image_id}' '{self.btrfs_path}/{uuid_val}' > /dev/null")
+            bash_command("btrfs subvolume snapshot '{}/{}' '{}/{}' > /dev/null".format(self.btrfs_path, image_id, self.btrfs_path, uuid_val))
             
             # Setup resolv.conf
-            resolv_conf_path = f"{self.btrfs_path}/{uuid_val}/etc/resolv.conf"
+            resolv_conf_path = "{}/{}/etc/resolv.conf".format(self.btrfs_path, uuid_val)
             os.makedirs(os.path.dirname(resolv_conf_path), exist_ok=True)
             with open(resolv_conf_path, 'w') as f:
                 f.write('nameserver 8.8.8.8\n')
                 
             # Save command
-            with open(f"{self.btrfs_path}/{uuid_val}/{uuid_val}.cmd", 'w') as f:
+            with open("{}/{}/{}.cmd".format(self.btrfs_path, uuid_val, uuid_val), 'w') as f:
                 f.write(cmd)
             
             # Cgroup setup
-            bash_command(f"cgcreate -g '{self.cgroups}:/{uuid_val}'")
+            bash_command("cgcreate -g '{}:/{}'".format(self.cgroups, uuid_val))
             
             # Get CPU and memory limits from environment variables
             cpu_share = os.environ.get('BOCKER_CPU_SHARE', '512')
-            bash_command(f"cgset -r cpu.shares={cpu_share} {uuid_val}")
+            bash_command("cgset -r cpu.shares={} {}".format(cpu_share, uuid_val))
             
             mem_limit = os.environ.get('BOCKER_MEM_LIMIT', '512')
             mem_bytes = int(mem_limit) * 1000000
-            bash_command(f"cgset -r memory.limit_in_bytes={mem_bytes} {uuid_val}")
+            bash_command("cgset -r memory.limit_in_bytes={} {}".format(mem_bytes, uuid_val))
             
             # Execute container
-            exec_cmd = f"""cgexec -g '{self.cgroups}:{uuid_val}' \
-ip netns exec netns_{uuid_val} \
+            exec_cmd = """cgexec -g '{}:{}' \
+ip netns exec netns_{} \
 unshare -fmuip --mount-proc \
-chroot '{self.btrfs_path}/{uuid_val}' \
-/bin/sh -c "/bin/mount -t proc proc /proc && {cmd}" """
+chroot '{}/{}' \
+/bin/sh -c "/bin/mount -t proc proc /proc && {}" """.format(self.cgroups, uuid_val, uuid_val, self.btrfs_path, uuid_val, cmd)
             
             # Run the command and capture output to log file
             result = subprocess.run(['bash', '-c', exec_cmd], 
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
             
             # Write output to log file
-            with open(f"{self.btrfs_path}/{uuid_val}/{uuid_val}.log", 'w') as f:
+            with open("{}/{}/{}.log".format(self.btrfs_path, uuid_val, uuid_val), 'w') as f:
                 f.write(result.stdout)
                 if result.stderr:
                     f.write(result.stderr)
@@ -250,40 +250,40 @@ chroot '{self.btrfs_path}/{uuid_val}' \
         finally:
             # Cleanup network
             try:
-                bash_command(f"ip link del dev veth0_{uuid_val}")
-                bash_command(f"ip netns del netns_{uuid_val}")
+                bash_command("ip link del dev veth0_{}".format(uuid_val))
+                bash_command("ip netns del netns_{}".format(uuid_val))
             except:
                 pass
 
     def bocker_exec(self, container_id, *command):
         """Execute a command in a running container"""
         if self.bocker_check(container_id) == 1:
-            print(f"No container named '{container_id}' exists")
+            print("No container named '{}' exists".format(container_id))
             sys.exit(1)
             
         # Find container PID
         try:
-            pid_cmd = f"ps o ppid,pid | grep \"^$(ps o pid,cmd | grep -E \"^\ *[0-9]+ unshare.*{container_id}\" | awk '{{print $1}}')\" | awk '{{print $2}}'"
+            pid_cmd = "ps o ppid,pid | grep \"^$(ps o pid,cmd | grep -E \"^\ *[0-9]+ unshare.*{}\" | awk '{{print $1}}')\" | awk '{{print $2}}'".format(container_id)
             cid = bash_command(pid_cmd).strip()
             
             if not re.match(r'^\s*[0-9]+$', cid):
-                print(f"Container '{container_id}' exists but is not running")
+                print("Container '{}' exists but is not running".format(container_id))
                 sys.exit(1)
                 
             cmd = ' '.join(command)
-            result = bash_command(f"nsenter -t {cid} -m -u -i -n -p chroot '{self.btrfs_path}/{container_id}' {cmd}")
+            result = bash_command("nsenter -t {} -m -u -i -n -p chroot '{}/{}' {}".format(cid, self.btrfs_path, container_id, cmd))
             print(result.strip())
             
         except Exception as e:
-            print(f"Error executing command: {e}")
+            print("Error executing command: {}".format(e))
 
     def bocker_logs(self, container_id):
         """View logs from a container"""
         if self.bocker_check(container_id) == 1:
-            print(f"No container named '{container_id}' exists")
+            print("No container named '{}' exists".format(container_id))
             sys.exit(1)
             
-        log_file = f"{self.btrfs_path}/{container_id}/{container_id}.log"
+        log_file = "{}/{}/{}.log".format(self.btrfs_path, container_id, container_id)
         if os.path.exists(log_file):
             with open(log_file, 'r') as f:
                 return f.read().strip()
@@ -292,14 +292,14 @@ chroot '{self.btrfs_path}/{uuid_val}' \
     def bocker_commit(self, container_id, image_id):
         """Commit a container to an image"""
         if self.bocker_check(container_id) == 1:
-            print(f"No container named '{container_id}' exists")
+            print("No container named '{}' exists".format(container_id))
             sys.exit(1)
             
         if self.bocker_check(image_id) == 0:
             self.bocker_rm(image_id)
             
-        bash_command(f"btrfs subvolume snapshot '{self.btrfs_path}/{container_id}' '{self.btrfs_path}/{image_id}' > /dev/null")
-        print(f"Created: {image_id}")
+        bash_command("btrfs subvolume snapshot '{}/{}' '{}/{}' > /dev/null".format(self.btrfs_path, container_id, self.btrfs_path, image_id))
+        print("Created: {}".format(image_id))
 
     def bocker_help(self, script_name):
         """Display help message"""
