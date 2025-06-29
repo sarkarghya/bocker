@@ -160,56 +160,193 @@ class Bocker:
         return '\n'.join(output)
 
     def pull(self, args):
-        """Pull an image from Docker Hub: BOCKER pull <name> <tag>"""
+        """Pull an image from cloud storage: BOCKER pull <name> <tag>"""
+        import os
+        import sys
+        import requests
+        import tarfile
+        import json
+        import tempfile
+        import shutil
+        import uuid
+        from dotenv import load_dotenv
+        
         if len(args) < 2:
             print("Usage: bocker pull <name> <tag>", file=sys.stderr)
             return 1
         
         name, tag = args[0], args[1]
         
-        # Validate arguments using Python
-        if not name or not tag:
-            print("Error: Image name and tag cannot be empty", file=sys.stderr)
+        # Load environment variables
+        load_dotenv()
+        r2_domain = os.getenv('R2_DOMAIN')
+        
+        if not r2_domain:
+            print("Error: R2_DOMAIN not found in environment", file=sys.stderr)
             return 1
+        
+        # Create temporary directories
+        temp_base = tempfile.mkdtemp(prefix=f"bocker_{name}_{tag}_")
+        download_path = os.path.join(temp_base, "download")
+        extract_path = os.path.join(temp_base, "extract")
+        process_path = os.path.join(temp_base, "process")
+        
+        os.makedirs(download_path, exist_ok=True)
+        os.makedirs(extract_path, exist_ok=True)
+        os.makedirs(process_path, exist_ok=True)
+        
+        try:
+            # Step 1: Download the image
+            tarball_url = f"https://{r2_domain}/{name}_{tag}.tar.gz"
+            compressed_filename = os.path.join(download_path, f"{name}_{tag}.tar.gz")
             
-        bash_script = f"""
-        set -o errexit -o nounset -o pipefail
-        btrfs_path='{self.btrfs_path}'
-        
-        function bocker_check() {{
-            btrfs subvolume list "$btrfs_path" | grep -qw "$1" && echo 0 || echo 1
-        }}
-        
-        function bocker_init() {{
-            uuid="img_$(shuf -i 42002-42254 -n 1)"
-            if [[ -d "$1" ]]; then
-                [[ "$(bocker_check "$uuid")" == 0 ]] && bocker_run "$@"
-                btrfs subvolume create "$btrfs_path/$uuid" > /dev/null
-                cp -rf --reflink=auto "$1"/* "$btrfs_path/$uuid" > /dev/null
-                [[ ! -f "$btrfs_path/$uuid"/img.source ]] && echo "$1" > "$btrfs_path/$uuid"/img.source
-                echo "Created: $uuid"
-            else
-                echo "No directory named '$1' exists"
+            print(f"Downloading {name}:{tag} from {r2_domain}")
+            print(f"URL: {tarball_url}")
+            
+            resp = requests.get(tarball_url, stream=True)
+            resp.raise_for_status()
+            
+            # Download with progress
+            total_size = int(resp.headers.get('content-length', 0))
+            downloaded = 0
+            
+            with open(compressed_filename, 'wb') as f:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total_size > 0:
+                            percent = (downloaded / total_size) * 100
+                            print(f"\rProgress: {percent:.1f}%", end='', flush=True)
+            
+            print(f"\nDownloaded {compressed_filename}")
+            
+            # Step 2: Extract the tar.gz
+            print("Extracting Docker image archive...")
+            with tarfile.open(compressed_filename, "r:gz") as tar:
+                tar.extractall(path=extract_path)
+            
+            print("✓ Archive extraction complete!")
+            
+            # Step 3: Process Docker image format
+            print("Processing Docker image layers...")
+            
+            # Look for manifest.json in extracted content
+            manifest_path = None
+            for root, dirs, files in os.walk(extract_path):
+                if 'manifest.json' in files:
+                    manifest_path = os.path.join(root, 'manifest.json')
+                    break
+            
+            if not manifest_path:
+                print("Error: manifest.json not found in extracted image", file=sys.stderr)
+                return 1
+            
+            # Read manifest
+            with open(manifest_path, 'r') as f:
+                manifest = json.load(f)
+            
+            # Copy all files to process directory first
+            extract_root = os.path.dirname(manifest_path)
+            for item in os.listdir(extract_root):
+                src = os.path.join(extract_root, item)
+                dst = os.path.join(process_path, item)
+                if os.path.isdir(src):
+                    shutil.copytree(src, dst)
+                else:
+                    shutil.copy2(src, dst)
+            
+            # Process layers
+            for entry in manifest:
+                if 'Layers' in entry:
+                    for layer in entry['Layers']:
+                        layer_path = os.path.join(process_path, layer)
+                        if os.path.exists(layer_path):
+                            print(f"Extracting layer: {layer}")
+                            with tarfile.open(layer_path, 'r') as layer_tar:
+                                layer_tar.extractall(path=process_path)
+                            # Remove the layer tar after extraction
+                            os.remove(layer_path)
+                
+                # Remove config files
+                if 'Config' in entry:
+                    config_path = os.path.join(process_path, entry['Config'])
+                    if os.path.exists(config_path):
+                        os.remove(config_path)
+            
+            # Remove repositories file if it exists
+            repositories_path = os.path.join(process_path, 'repositories')
+            if os.path.exists(repositories_path):
+                os.remove(repositories_path)
+            
+            # Remove manifest.json as it's no longer needed
+            process_manifest_path = os.path.join(process_path, 'manifest.json')
+            if os.path.exists(process_manifest_path):
+                os.remove(process_manifest_path)
+            
+            # Add image source information
+            with open(os.path.join(process_path, 'img.source'), 'w') as f:
+                f.write(f"{name}:{tag}\n")
+            
+            print("✓ Layer processing complete!")
+            
+            # Step 4: Create bocker image using btrfs
+            print("Creating bocker image...")
+            
+            # Generate unique image ID
+            img_uuid = f"img_{uuid.uuid4().hex[:8]}"
+            
+            bash_script = f"""
+            set -o errexit -o nounset -o pipefail
+            btrfs_path='{self.btrfs_path}'
+            process_path='{process_path}'
+            img_uuid='{img_uuid}'
+            
+            function bocker_check() {{
+                btrfs subvolume list "$btrfs_path" | grep -qw "$1" && echo 0 || echo 1
+            }}
+            
+            # Check if image already exists
+            if [[ "$(bocker_check "$img_uuid")" == 0 ]]; then
+                echo "Image UUID conflict, regenerating..."
+                img_uuid="img_$(shuf -i 42002-42254 -n 1)"
             fi
-        }}
-        
-        function bocker_pull() {{
-            tmp_uuid="$(uuidgen)" && mkdir /tmp/"$tmp_uuid"
-            ./download-frozen-image-v2.sh /tmp/"$tmp_uuid" "$1:$2" > /dev/null
-            rm -rf /tmp/"$tmp_uuid"/repositories
-            for tar in $(jq '.[].Layers[]' --raw-output < /tmp/$tmp_uuid/manifest.json); do
-                tar xf /tmp/$tmp_uuid/$tar -C /tmp/$tmp_uuid && rm -rf /tmp/$tmp_uuid/$tar
-            done
-            for config in $(jq '.[].Config' --raw-output < /tmp/$tmp_uuid/manifest.json); do
-                rm -f /tmp/$tmp_uuid/$config
-            done
-            echo "$1:$2" > /tmp/$tmp_uuid/img.source
-            bocker_init /tmp/$tmp_uuid && rm -rf /tmp/$tmp_uuid
-        }}
-        
-        bocker_pull "{name}" "{tag}"
-        """
-        return self._run_bash_command(bash_script, show_realtime=True)
+            
+            # Create btrfs subvolume
+            echo "Creating btrfs subvolume: $img_uuid"
+            btrfs subvolume create "$btrfs_path/$img_uuid" > /dev/null
+            
+            # Copy processed image content
+            echo "Copying image content..."
+            cp -rf --reflink=auto "$process_path"/* "$btrfs_path/$img_uuid/" > /dev/null
+            
+            echo "Created: $img_uuid"
+            echo "Image {name}:{tag} successfully pulled and stored as $img_uuid"
+            """
+            
+            result = self._run_bash_command(bash_script, show_realtime=True)
+            
+            print("✓ Bocker image creation complete!")
+            return result
+            
+        except requests.RequestException as e:
+            print(f"Failed to download: {e}", file=sys.stderr)
+            return 1
+        except tarfile.TarError as e:
+            print(f"Failed to extract: {e}", file=sys.stderr)
+            return 1
+        except json.JSONDecodeError as e:
+            print(f"Failed to parse manifest.json: {e}", file=sys.stderr)
+            return 1
+        except Exception as e:
+            print(f"Unexpected error: {e}", file=sys.stderr)
+            return 1
+        finally:
+            # Clean up all temporary directories
+            if os.path.exists(temp_base):
+                print(f"Cleaning up temporary files...")
+                shutil.rmtree(temp_base)
+                print("✓ Cleanup complete!")
     
     def init(self, args):
         """Create an image from a directory: BOCKER init <directory>"""
