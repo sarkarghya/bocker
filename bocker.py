@@ -1,722 +1,411 @@
-"""
-Python implementation of Bocker with comprehensive test coverage.
-"""
-
-# %%
+#!/usr/bin/env python3
 import subprocess
-import os
-import json
-import uuid
-import random
-import re
-import shutil
-import tempfile
 import sys
+import os
+import tempfile
+import uuid
+import json
+import shutil
 import time
-from pathlib import Path
 
-def bash_command(command):
-    """
-    Execute a bash command and return its output.
-
-    Args:
-        command (str): The bash command to execute
-
-    Returns:
-        str: The stdout output from the command
-
-    Raises:
-        subprocess.CalledProcessError: If the command returns non-zero exit code
-    """
-    try:
-        result = subprocess.run(
-            ['bash', '-c', command],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            universal_newlines=True,
-            check=True
-        )
-        return result.stdout
-    except subprocess.CalledProcessError as e:
-        # You can handle errors differently if needed
-        # For example, return stderr or raise the exception
-        return "Error: {}".format(e.stderr)
-
-# %%
-
-class Bocker:
-    def __init__(self, btrfs_path='/var/bocker', cgroups='cpu,cpuacct,memory'):
-        self.btrfs_path = btrfs_path
-        self.cgroups = cgroups
+class BockerWrapper:
+    def __init__(self):
+        self.btrfs_path = '/var/bocker'
+        self.cgroups = 'cpu,cpuacct,memory'
         
-    def bocker_check(self, name):
-        """Check if a subvolume exists"""
+    def _run_bash_command(self, bash_script, show_realtime=False):
+        """Execute embedded bash commands"""
         try:
-            bash_command("btrfs subvolume list '{}' | grep -qw '{}'".format(self.btrfs_path, name))
-            return 0
-        except:
+            if show_realtime:
+                process = subprocess.Popen(
+                    ['bash', '-c', bash_script],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                    universal_newlines=True
+                )
+                
+                while True:
+                    output = process.stdout.readline()
+                    if output == '' and process.poll() is not None:
+                        break
+                    if output:
+                        print(output.rstrip())
+                
+                return_code = process.poll()
+                return return_code if return_code is not None else 0
+            else:
+                result = subprocess.run(['bash', '-c', bash_script], capture_output=True, text=True)
+                if result.returncode != 0:
+                    if result.stderr:
+                        print(result.stderr, file=sys.stderr)
+                    return result.returncode
+                
+                if result.stdout:
+                    print(result.stdout.rstrip())
+                return 0
+                
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
             return 1
 
-    def bocker_init(self, directory):
-        """Create an image from a directory"""
-        uuid_val = "img_{}".format(random.randint(42002, 42254))
-        
-        if not os.path.isdir(directory):
-            print("No directory named '{}' exists".format(directory))
-            return None
-            
-        if self.bocker_check(uuid_val) == 0:
-            return self.bocker_run(directory)
-            
-        # Create btrfs subvolume
-        bash_command("btrfs subvolume create '{}/{}' > /dev/null".format(self.btrfs_path, uuid_val))
-        
-        # Copy files with reflink
-        bash_command("cp -rf --reflink=auto '{}'/* '{}/{}' > /dev/null".format(directory, self.btrfs_path, uuid_val))
-        
-        # Create img.source file if it doesn't exist
-        img_source_path = "{}/{}/img.source".format(self.btrfs_path, uuid_val)
-        if not os.path.exists(img_source_path):
-            with open(img_source_path, 'w') as f:
-                f.write(directory)
-                
-        print("Created: {}".format(uuid_val))
-        return uuid_val
+    def _bocker_check(self, container_id):
+        """Check if container/image exists"""
+        bash_script = f"""
+        btrfs_path='{self.btrfs_path}'
+        btrfs subvolume list "$btrfs_path" | grep -qw "{container_id}" && echo 0 || echo 1
+        """
+        result = subprocess.run(['bash', '-c', bash_script], capture_output=True, text=True)
+        return result.stdout.strip() == '0'
 
-    def bocker_pull(self, name, tag):
-        """Pull an image from Docker Hub"""
-        tmp_uuid = str(uuid.uuid4())
-        tmp_dir = "/tmp/{}".format(tmp_uuid)
-        os.makedirs(tmp_dir)
+    def pull(self, args):
+        """Pull an image from Docker Hub: BOCKER pull <name> <tag>"""
+        if len(args) < 2:
+            print("Usage: bocker pull <name> <tag>", file=sys.stderr)
+            return 1
         
-        try:
-            # Download image (this will show progress)
-            subprocess.run(['./download-frozen-image-v2.sh', tmp_dir, '{}:{}'.format(name, tag)], 
-                         stdout=None, stderr=subprocess.DEVNULL)
-            
-            # Remove repositories
-            repositories_path = "{}/repositories".format(tmp_dir)
-            if os.path.exists(repositories_path):
-                shutil.rmtree(repositories_path)
-            
-            # Extract layers
-            manifest_path = "{}/manifest.json".format(tmp_dir)
-            with open(manifest_path, 'r') as f:
-                manifest = json.load(f)
-                
-            for item in manifest:
-                for layer in item.get('Layers', []):
-                    bash_command("tar xf '{}/{}' -C '{}'".format(tmp_dir, layer, tmp_dir))
-                    os.remove("{}/{}".format(tmp_dir, layer))
-                    
-                # Remove config files
-                config = item.get('Config')
-                if config:
-                    config_path = "{}/{}".format(tmp_dir, config)
-                    if os.path.exists(config_path):
-                        os.remove(config_path)
-            
-            # Create img.source
-            with open("{}/img.source".format(tmp_dir), 'w') as f:
-                f.write("{}:{}".format(name, tag))
-                
-            return self.bocker_init(tmp_dir)
-            
-        finally:
-            if os.path.exists(tmp_dir):
-                shutil.rmtree(tmp_dir)
-
-    def bocker_rm(self, container_id):
-        """Delete an image or container"""
-        if self.bocker_check(container_id) == 1:
-            print("No container named '{}' exists".format(container_id))
-            sys.exit(1)
-            
-        # Delete btrfs subvolume
-        bash_command("btrfs subvolume delete '{}/{}' > /dev/null".format(self.btrfs_path, container_id))
+        name, tag = args[0], args[1]
+        bash_script = f"""
+        set -o errexit -o nounset -o pipefail
+        btrfs_path='{self.btrfs_path}'
         
-        # Delete cgroup
-        try:
-            bash_command("cgdelete -g '{}:/{}' &> /dev/null".format(self.cgroups, container_id))
-        except:
-            pass
+        function bocker_check() {{
+            btrfs subvolume list "$btrfs_path" | grep -qw "$1" && echo 0 || echo 1
+        }}
+        
+        function bocker_init() {{
+            uuid="img_$(shuf -i 42002-42254 -n 1)"
+            if [[ -d "$1" ]]; then
+                [[ "$(bocker_check "$uuid")" == 0 ]] && bocker_run "$@"
+                btrfs subvolume create "$btrfs_path/$uuid" > /dev/null
+                cp -rf --reflink=auto "$1"/* "$btrfs_path/$uuid" > /dev/null
+                [[ ! -f "$btrfs_path/$uuid"/img.source ]] && echo "$1" > "$btrfs_path/$uuid"/img.source
+                echo "Created: $uuid"
+            else
+                echo "No directory named '$1' exists"
+            fi
+        }}
+        
+        function bocker_pull() {{
+            tmp_uuid="$(uuidgen)" && mkdir /tmp/"$tmp_uuid"
+            ./download-frozen-image-v2.sh /tmp/"$tmp_uuid" "$1:$2" > /dev/null
+            rm -rf /tmp/"$tmp_uuid"/repositories
+            for tar in $(jq '.[].Layers[]' --raw-output < /tmp/$tmp_uuid/manifest.json); do
+                tar xf /tmp/$tmp_uuid/$tar -C /tmp/$tmp_uuid && rm -rf /tmp/$tmp_uuid/$tar
+            done
+            for config in $(jq '.[].Config' --raw-output < /tmp/$tmp_uuid/manifest.json); do
+                rm -f /tmp/$tmp_uuid/$config
+            done
+            echo "$1:$2" > /tmp/$tmp_uuid/img.source
+            bocker_init /tmp/$tmp_uuid && rm -rf /tmp/$tmp_uuid
+        }}
+        
+        bocker_pull "{name}" "{tag}"
+        """
+        return self._run_bash_command(bash_script, show_realtime=True)
+    
+    def init(self, args):
+        """Create an image from a directory: BOCKER init <directory>"""
+        if len(args) < 1:
+            print("Usage: bocker init <directory>", file=sys.stderr)
+            return 1
+        
+        directory = args[0]
+        bash_script = f"""
+        set -o errexit -o nounset -o pipefail
+        btrfs_path='{self.btrfs_path}'
+        
+        function bocker_check() {{
+            btrfs subvolume list "$btrfs_path" | grep -qw "$1" && echo 0 || echo 1
+        }}
+        
+        function bocker_init() {{
+            uuid="img_$(shuf -i 42002-42254 -n 1)"
+            if [[ -d "$1" ]]; then
+                [[ "$(bocker_check "$uuid")" == 0 ]] && bocker_run "$@"
+                btrfs subvolume create "$btrfs_path/$uuid" > /dev/null
+                cp -rf --reflink=auto "$1"/* "$btrfs_path/$uuid" > /dev/null
+                [[ ! -f "$btrfs_path/$uuid"/img.source ]] && echo "$1" > "$btrfs_path/$uuid"/img.source
+                echo "Created: $uuid"
+            else
+                echo "No directory named '$1' exists"
+            fi
+        }}
+        
+        bocker_init "{directory}"
+        """
+        return self._run_bash_command(bash_script)
+    
+    def rm(self, args):
+        """Delete an image or container: BOCKER rm <image_id or container_id>"""
+        if len(args) < 1:
+            print("Usage: bocker rm <image_id or container_id>", file=sys.stderr)
+            return 1
+        
+        container_id = args[0]
+        bash_script = f"""
+        set -o errexit -o nounset -o pipefail
+        btrfs_path='{self.btrfs_path}'
+        cgroups='{self.cgroups}'
+        
+        function bocker_check() {{
+            btrfs subvolume list "$btrfs_path" | grep -qw "$1" && echo 0 || echo 1
+        }}
+        
+        function bocker_rm() {{
+            [[ "$(bocker_check "$1")" == 1 ]] && echo "No container named '$1' exists" && exit 1
+            btrfs subvolume delete "$btrfs_path/$1" > /dev/null
+            cgdelete -g "$cgroups:/$1" &> /dev/null || true
+            echo "Removed: $1"
+        }}
+        
+        bocker_rm "{container_id}"
+        """
+        return self._run_bash_command(bash_script)
+    
+    def images(self, args):
+        """List images: BOCKER images"""
+        bash_script = f"""
+        btrfs_path='{self.btrfs_path}'
+        
+        function bocker_images() {{
+            echo -e "IMAGE_ID\\t\\tSOURCE"
+            for img in "$btrfs_path"/img_*; do
+                img=$(basename "$img")
+                echo -e "$img\\t\\t$(cat "$btrfs_path/$img/img.source")"
+            done
+        }}
+        
+        bocker_images
+        """
+        return self._run_bash_command(bash_script)
+    
+    def ps(self, args):
+        """List containers: BOCKER ps"""
+        bash_script = f"""
+        btrfs_path='{self.btrfs_path}'
+        
+        function bocker_ps() {{
+            echo -e "CONTAINER_ID\\t\\tCOMMAND"
+            for ps in "$btrfs_path"/ps_*; do
+                ps=$(basename "$ps")
+                echo -e "$ps\\t\\t$(cat "$btrfs_path/$ps/$ps.cmd")"
+            done
+        }}
+        
+        bocker_ps
+        """
+        return self._run_bash_command(bash_script)
+    
+    def run(self, args):
+        """Create a container: BOCKER run <image_id> <command>"""
+        if len(args) < 2:
+            print("Usage: bocker run <image_id> <command>", file=sys.stderr)
+            return 1
+        
+        image_id = args[0]
+        command = ' '.join(args[1:])
+        cpu_share = os.environ.get('BOCKER_CPU_SHARE', '512')
+        mem_limit = os.environ.get('BOCKER_MEM_LIMIT', '512')
+        
+        bash_script = f"""
+        set -o errexit -o nounset -o pipefail; shopt -s nullglob
+        btrfs_path='{self.btrfs_path}'
+        cgroups='{self.cgroups}'
+        
+        function bocker_check() {{
+            btrfs subvolume list "$btrfs_path" | grep -qw "$1" && echo 0 || echo 1
+        }}
+        
+        function bocker_run() {{
+            uuid="ps_$(shuf -i 42002-42254 -n 1)"
+            [[ "$(bocker_check "$1")" == 1 ]] && echo "No image named '$1' exists" && exit 1
+            [[ "$(bocker_check "$uuid")" == 0 ]] && echo "UUID conflict, retrying..." && bocker_run "$@" && return
+            cmd="${{@:2}}" && ip="$(echo "${{uuid: -3}}" | sed 's/0//g')" && mac="${{uuid: -3:1}}:${{uuid: -2}}"
             
-        print("Removed: {}".format(container_id))
-
-    def bocker_images(self):
-        """List images"""
-        print("IMAGE_ID\t\tSOURCE")
-        
-        btrfs_path = Path(self.btrfs_path)
-        for img_path in btrfs_path.glob("img_*"):
-            img_name = img_path.name
-            source_file = img_path / "img.source"
-            if source_file.exists():
-                with open(source_file, 'r') as f:
-                    source = f.read().strip()
-                print("{}\t\t{}".format(img_name, source))
-
-    def bocker_ps(self):
-        """List containers"""
-        print("CONTAINER_ID\t\tCOMMAND")
-        
-        btrfs_path = Path(self.btrfs_path)
-        for ps_path in btrfs_path.glob("ps_*"):
-            ps_name = ps_path.name
-            cmd_file = ps_path / "{}.cmd".format(ps_name)
-            if cmd_file.exists():
-                with open(cmd_file, 'r') as f:
-                    command = f.read().strip()
-                print("{}\t\t{}".format(ps_name, command))
-
-    def bocker_run(self, image_id, *command):
-        """Create a container"""
-        uuid_val = "ps_{}".format(random.randint(42002, 42254))
-        
-        if self.bocker_check(image_id) == 1:
-            print("No image named '{}' exists".format(image_id))
-            sys.exit(1)
-            
-        if self.bocker_check(uuid_val) == 0:
-            print("UUID conflict, retrying...")
-            return self.bocker_run(image_id, *command)
-            
-        cmd = ' '.join(command)
-        ip_suffix = uuid_val[-3:].lstrip('0') or '1'
-        mac_suffix = "{}:{}".format(uuid_val[-3:-2], uuid_val[-2:])
-        
-        try:
             # Network setup
-            bash_command("ip link add dev veth0_{} type veth peer name veth1_{}".format(uuid_val, uuid_val))
-            bash_command("ip link set dev veth0_{} up".format(uuid_val))
-            bash_command("ip link set veth0_{} master bridge0".format(uuid_val))
-            bash_command("ip netns add netns_{}".format(uuid_val))
-            bash_command("ip link set veth1_{} netns netns_{}".format(uuid_val, uuid_val))
-            bash_command("ip netns exec netns_{} ip link set dev lo up".format(uuid_val))
-            bash_command("ip netns exec netns_{} ip link set veth1_{} address 02:42:ac:11:00:{}".format(uuid_val, uuid_val, mac_suffix))
-            bash_command("ip netns exec netns_{} ip addr add 10.0.0.{}/24 dev veth1_{}".format(uuid_val, ip_suffix, uuid_val))
-            bash_command("ip netns exec netns_{} ip link set dev veth1_{} up".format(uuid_val, uuid_val))
-            bash_command("ip netns exec netns_{} ip route add default via 10.0.0.1".format(uuid_val))
+            ip link add dev veth0_"$uuid" type veth peer name veth1_"$uuid"
+            ip link set dev veth0_"$uuid" up
+            ip link set veth0_"$uuid" master bridge0
+            ip netns add netns_"$uuid"
+            ip link set veth1_"$uuid" netns netns_"$uuid"
+            ip netns exec netns_"$uuid" ip link set dev lo up
+            ip netns exec netns_"$uuid" ip link set veth1_"$uuid" address 02:42:ac:11:00"$mac"
+            ip netns exec netns_"$uuid" ip addr add 10.0.0."$ip"/24 dev veth1_"$uuid"
+            ip netns exec netns_"$uuid" ip link set dev veth1_"$uuid" up
+            ip netns exec netns_"$uuid" ip route add default via 10.0.0.1
             
             # Filesystem setup
-            bash_command("btrfs subvolume snapshot '{}/{}' '{}/{}' > /dev/null".format(self.btrfs_path, image_id, self.btrfs_path, uuid_val))
+            btrfs subvolume snapshot "$btrfs_path/$1" "$btrfs_path/$uuid" > /dev/null
+            echo 'nameserver 8.8.8.8' > "$btrfs_path/$uuid"/etc/resolv.conf
+            echo "$cmd" > "$btrfs_path/$uuid/$uuid.cmd"
             
-            # Setup resolv.conf
-            resolv_conf_path = "{}/{}/etc/resolv.conf".format(self.btrfs_path, uuid_val)
-            os.makedirs(os.path.dirname(resolv_conf_path), exist_ok=True)
-            with open(resolv_conf_path, 'w') as f:
-                f.write('nameserver 8.8.8.8\n')
-                
-            # Save command
-            with open("{}/{}/{}.cmd".format(self.btrfs_path, uuid_val, uuid_val), 'w') as f:
-                f.write(cmd)
-            
-            # Cgroup setup
-            bash_command("cgcreate -g '{}:/{}'".format(self.cgroups, uuid_val))
-            
-            # Get CPU and memory limits from environment variables
-            cpu_share = os.environ.get('BOCKER_CPU_SHARE', '512')
-            bash_command("cgset -r cpu.shares={} {}".format(cpu_share, uuid_val))
-            
-            mem_limit = os.environ.get('BOCKER_MEM_LIMIT', '512')
-            mem_bytes = int(mem_limit) * 1000000
-            bash_command("cgset -r memory.limit_in_bytes={} {}".format(mem_bytes, uuid_val))
-            
-            # Execute container
-            exec_cmd = """cgexec -g '{}:{}' \
-ip netns exec netns_{} \
-unshare -fmuip --mount-proc \
-chroot '{}/{}' \
-/bin/sh -c "/bin/mount -t proc proc /proc && {}" """.format(self.cgroups, uuid_val, uuid_val, self.btrfs_path, uuid_val, cmd)
-            
-            # Run the command and capture output to log file
-            result = subprocess.run(['bash', '-c', exec_cmd], 
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-            
-            # Write output to log file
-            with open("{}/{}/{}.log".format(self.btrfs_path, uuid_val, uuid_val), 'w') as f:
-                f.write(result.stdout)
-                if result.stderr:
-                    f.write(result.stderr)
-            
-            # Print output to console
-            if result.stdout:
-                print(result.stdout.strip())
-            if result.stderr:
-                print(result.stderr.strip())
-                
-            return uuid_val
-            
-        finally:
+            cgcreate -g "$cgroups:/$uuid"
+            : "${{BOCKER_CPU_SHARE:={cpu_share}}}" && cgset -r cpu.shares="$BOCKER_CPU_SHARE" "$uuid"
+            : "${{BOCKER_MEM_LIMIT:={mem_limit}}}" && cgset -r memory.limit_in_bytes="$((BOCKER_MEM_LIMIT * 1000000))" "$uuid"
+            cgexec -g "$cgroups:$uuid" \\
+                ip netns exec netns_"$uuid" \\
+                unshare -fmuip --mount-proc \\
+                chroot "$btrfs_path/$uuid" \\
+                /bin/sh -c "/bin/mount -t proc proc /proc && $cmd" \\
+                2>&1 | tee "$btrfs_path/$uuid/$uuid.log" || true
             # Cleanup network
-            try:
-                bash_command("ip link del dev veth0_{}".format(uuid_val))
-                bash_command("ip netns del netns_{}".format(uuid_val))
-            except:
-                pass
-
-    def bocker_exec(self, container_id, *command):
-        """Execute a command in a running container"""
-        if self.bocker_check(container_id) == 1:
-            print("No container named '{}' exists".format(container_id))
-            sys.exit(1)
-            
-        # Find container PID
-        try:
-            pid_cmd = "ps o ppid,pid | grep \"^$(ps o pid,cmd | grep -E \"^\ *[0-9]+ unshare.*{}\" | awk '{{print $1}}')\" | awk '{{print $2}}'".format(container_id)
-            cid = bash_command(pid_cmd).strip()
-            
-            if not re.match(r'^\s*[0-9]+$', cid):
-                print("Container '{}' exists but is not running".format(container_id))
-                sys.exit(1)
-                
-            cmd = ' '.join(command)
-            result = bash_command("nsenter -t {} -m -u -i -n -p chroot '{}/{}' {}".format(cid, self.btrfs_path, container_id, cmd))
-            print(result.strip())
-            
-        except Exception as e:
-            print("Error executing command: {}".format(e))
-
-    def bocker_logs(self, container_id):
-        """View logs from a container"""
-        if self.bocker_check(container_id) == 1:
-            print("No container named '{}' exists".format(container_id))
-            sys.exit(1)
-            
-        log_file = "{}/{}/{}.log".format(self.btrfs_path, container_id, container_id)
-        if os.path.exists(log_file):
-            with open(log_file, 'r') as f:
-                return f.read().strip()
-        return ""
-
-    def bocker_commit(self, container_id, image_id):
-        """Commit a container to an image"""
-        if self.bocker_check(container_id) == 1:
-            print("No container named '{}' exists".format(container_id))
-            sys.exit(1)
-            
-        if self.bocker_check(image_id) == 0:
-            self.bocker_rm(image_id)
-            
-        bash_command("btrfs subvolume snapshot '{}/{}' '{}/{}' > /dev/null".format(self.btrfs_path, container_id, self.btrfs_path, image_id))
-        print("Created: {}".format(image_id))
-
-    def bocker_help(self, script_name):
+            ip link del dev veth0_"$uuid"
+            ip netns del netns_"$uuid"
+        }}
+        
+        bocker_run "{image_id}" {command}
+        """
+        return self._run_bash_command(bash_script, show_realtime=True)
+    
+    def exec(self, args):
+        """Execute a command in a running container: BOCKER exec <container_id> <command>"""
+        if len(args) < 2:
+            print("Usage: bocker exec <container_id> <command>", file=sys.stderr)
+            return 1
+        
+        container_id = args[0]
+        command = ' '.join(args[1:])
+        bash_script = f"""
+        set -o errexit -o nounset -o pipefail
+        btrfs_path='{self.btrfs_path}'
+        
+        function bocker_check() {{
+            btrfs subvolume list "$btrfs_path" | grep -qw "$1" && echo 0 || echo 1
+        }}
+        
+        function bocker_exec() {{
+            [[ "$(bocker_check "$1")" == 1 ]] && echo "No container named '$1' exists" && exit 1
+            cid="$(ps o ppid,pid | grep "^$(ps o pid,cmd | grep -E "^\\ *[0-9]+ unshare.*$1" | awk '{{print $1}}')" | awk '{{print $2}}')"
+            [[ ! "$cid" =~ ^\\ *[0-9]+$ ]] && echo "Container '$1' exists but is not running" && exit 1
+            nsenter -t "$cid" -m -u -i -n -p chroot "$btrfs_path/$1" ${{@:2}}
+        }}
+        
+        bocker_exec "{container_id}" {command}
+        """
+        return self._run_bash_command(bash_script, show_realtime=True)
+    
+    def logs(self, args):
+        """View logs from a container: BOCKER logs <container_id>"""
+        if len(args) < 1:
+            print("Usage: bocker logs <container_id>", file=sys.stderr)
+            return 1
+        
+        container_id = args[0]
+        bash_script = f"""
+        btrfs_path='{self.btrfs_path}'
+        
+        function bocker_check() {{
+            btrfs subvolume list "$btrfs_path" | grep -qw "$1" && echo 0 || echo 1
+        }}
+        
+        function bocker_logs() {{
+            [[ "$(bocker_check "$1")" == 1 ]] && echo "No container named '$1' exists" && exit 1
+            cat "$btrfs_path/$1/$1.log"
+        }}
+        
+        bocker_logs "{container_id}"
+        """
+        return self._run_bash_command(bash_script)
+    
+    def commit(self, args):
+        """Commit a container to an image: BOCKER commit <container_id> <image_id>"""
+        if len(args) < 2:
+            print("Usage: bocker commit <container_id> <image_id>", file=sys.stderr)
+            return 1
+        
+        container_id, image_id = args[0], args[1]
+        bash_script = f"""
+        set -o errexit -o nounset -o pipefail
+        btrfs_path='{self.btrfs_path}'
+        cgroups='{self.cgroups}'
+        
+        function bocker_check() {{
+            btrfs subvolume list "$btrfs_path" | grep -qw "$1" && echo 0 || echo 1
+        }}
+        
+        function bocker_rm() {{
+            [[ "$(bocker_check "$1")" == 1 ]] && echo "No container named '$1' exists" && exit 1
+            btrfs subvolume delete "$btrfs_path/$1" > /dev/null
+            cgdelete -g "$cgroups:/$1" &> /dev/null || true
+            echo "Removed: $1"
+        }}
+        
+        function bocker_commit() {{
+            [[ "$(bocker_check "$1")" == 1 ]] && echo "No container named '$1' exists" && exit 1
+            [[ "$(bocker_check "$2")" == 1 ]] && echo "No image named '$2' exists" && exit 1
+            bocker_rm "$2" && btrfs subvolume snapshot "$btrfs_path/$1" "$btrfs_path/$2" > /dev/null
+            echo "Created: $2"
+        }}
+        
+        bocker_commit "{container_id}" "{image_id}"
+        """
+        return self._run_bash_command(bash_script)
+    
+    def help(self, args):
         """Display help message"""
-        help_text = """
-{} - A simple container runtime
-
-Commands:
-    init               Create an image from a directory
-    pull              Pull an image from Docker Hub
-    rm    Delete an image or container
-    images                       List images
-    ps                          List containers
-    run      Create a container
-    exec     Execute a command in a running container
-    logs          View logs from a container
-    commit   Commit a container to an image
-    help                        Display this message
-        """.format(script_name)
-        print(help_text)
+        bash_script = """
+        function bocker_help() {
+            echo "BOCKER - Docker implemented in around 100 lines of bash"
+            echo ""
+            echo "Usage: bocker <command> [args...]"
+            echo ""
+            echo "Commands:"
+            echo "  pull <name> <tag>           Pull an image from Docker Hub"
+            echo "  init <directory>            Create an image from a directory"
+            echo "  rm <image_id|container_id>  Delete an image or container"
+            echo "  images                      List images"
+            echo "  ps                          List containers"
+            echo "  run <image_id> <command>    Create a container"
+            echo "  exec <container_id> <cmd>   Execute a command in a running container"
+            echo "  logs <container_id>         View logs from a container"
+            echo "  commit <container_id> <img> Commit a container to an image"
+            echo "  help                        Display this message"
+        }
+        
+        bocker_help
+        """
+        return self._run_bash_command(bash_script)
 
 def main():
-    """Main function to handle command line arguments"""
-    bocker = Bocker()
-    args = sys.argv[1:]
+    # Handle environment variables for CPU and memory limits
+    env_vars = {}
+    for key, value in os.environ.items():
+        if key.startswith('BOCKER_'):
+            env_vars[key] = value
     
-    if not args:
-        bocker.bocker_help(sys.argv)
-        return
-        
-    command = args
-    command_args = args[1:]
+    if env_vars:
+        for key, value in env_vars.items():
+            os.environ[key] = value
     
-    commands = {
-        'pull': lambda: bocker.bocker_pull(*command_args),
-        'init': lambda: bocker.bocker_init(*command_args),
-        'rm': lambda: bocker.bocker_rm(*command_args),
-        'images': lambda: bocker.bocker_images(),
-        'ps': lambda: bocker.bocker_ps(),
-        'run': lambda: bocker.bocker_run(*command_args),
-        'exec': lambda: bocker.bocker_exec(*command_args),
-        'logs': lambda: bocker.bocker_logs(*command_args),
-        'commit': lambda: bocker.bocker_commit(*command_args),
-        'help': lambda: bocker.bocker_help(sys.argv)
+    wrapper = BockerWrapper()
+    
+    if len(sys.argv) < 2:
+        return wrapper.help([])
+    
+    command = sys.argv[1]
+    args = sys.argv[2:] if len(sys.argv) > 2 else []
+    
+    # Map commands to their wrapper methods
+    command_map = {
+        'pull': wrapper.pull,
+        'init': wrapper.init,
+        'rm': wrapper.rm,
+        'images': wrapper.images,
+        'ps': wrapper.ps,
+        'run': wrapper.run,
+        'exec': wrapper.exec,
+        'logs': wrapper.logs,
+        'commit': wrapper.commit,
+        'help': wrapper.help
     }
     
-    if command in commands:
-        commands[command]()
+    if command in command_map:
+        return command_map[command](args)
     else:
-        bocker.bocker_help(sys.argv)
+        print(f"Unknown command: {command}", file=sys.stderr)
+        return wrapper.help([])
 
-if __name__ == "__main__":
-    main()
-
-# %%
-
-class BockerTestSuite:
-    """Comprehensive test suite for Bocker functionality"""
-    
-    def __init__(self, base_image_path="~/base-image"):
-        self.bocker = Bocker()
-        self.base_image_path = os.path.expanduser(base_image_path)
-        self.test_results = []
-        
-    def log_test(self, test_name, passed, message=""):
-        """Log test results"""
-        status = "PASS" if passed else "FAIL"
-        self.test_results.append("[{}] {}: {}".format(status, test_name, message))
-        print("[{}] {}: {}".format(status, test_name, message))
-        
-    def teardown(self):
-        """Clean up all images and containers"""
-        print("Running teardown...")
-        
-        # Get all images
-        try:
-            result = subprocess.run(['python3', 'bocker.py', 'images'], 
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-            for line in result.stdout.split('\n')[1:]:  # Skip header
-                if line.strip() and 'img_' in line:
-                    img_id = line.split()[0]  # Take first element
-                    subprocess.run(['python3', 'bocker.py', 'rm', img_id], 
-                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        except:
-            pass
-            
-        # Get all containers
-        try:
-            result = subprocess.run(['python3', 'bocker.py', 'ps'], 
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-            for line in result.stdout.split('\n')[1:]:  # Skip header
-                if line.strip() and 'ps_' in line:
-                    ps_id = line.split()[0]  # Take first element
-                    subprocess.run(['python3', 'bocker.py', 'rm', ps_id], 
-                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        except:
-            pass
-            
-    def test_images_header(self):
-        """Test that images command shows correct header"""
-        result = subprocess.run(['python3', 'bocker.py', 'images'], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        header = result.stdout.split('\n')
-        expected = "IMAGE_ID\t\tSOURCE"
-        passed = header and expected in header
-        self.log_test("test_images_header", passed, "Expected: {}".format(expected))
-        return passed
-        
-    def test_ps_header(self):
-        """Test that ps command shows correct header"""
-        result = subprocess.run(['python3', 'bocker.py', 'ps'], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        header = result.stdout.split('\n')
-        expected = "CONTAINER_ID\t\tCOMMAND"
-        passed = header and expected in header
-        self.log_test("test_ps_header", passed, "Expected: {}".format(expected))
-        return passed
-        
-    def test_init(self):
-        """Test image initialization"""
-        if not os.path.exists(self.base_image_path):
-            self.log_test("test_init", False, "Base image path {} does not exist".format(self.base_image_path))
-            return False
-            
-        result = subprocess.run(['python3', 'bocker.py', 'init', self.base_image_path], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        passed = result.stdout.startswith('Created: img_')
-        self.log_test("test_init", passed, result.stdout.strip())
-        return passed
-        
-    def bocker_run_test(self, img_id, command, expected_output):
-        """Helper function to test bocker container runs"""
-        subprocess.run(['python3', 'bocker.py', 'run', img_id, command], 
-                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        time.sleep(3)
-        
-        # Get container ID
-        result = subprocess.run(['python3', 'bocker.py', 'ps'], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        ps_id = None
-        for line in result.stdout.split('\n')[1:]:
-            if command in line:
-                ps_id = line.split()[0]
-                break
-                
-        if not ps_id:
-            return False
-            
-        # Get logs
-        result = subprocess.run(['python3', 'bocker.py', 'logs', ps_id], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        logs = result.stdout
-        
-        return expected_output in logs
-        
-    def test_run_comprehensive(self):
-        """Comprehensive test of run functionality"""
-        # Initialize image
-        result = subprocess.run(['python3', 'bocker.py', 'init', self.base_image_path], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        if not result.stdout.startswith('Created: img_'):
-            self.log_test("test_run_comprehensive", False, "Failed to create image")
-            return False
-            
-        img_id = result.stdout.split()[-1]
-        time.sleep(4)
-        
-        # Verify image exists
-        result = subprocess.run(['python3', 'bocker.py', 'images'], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        if img_id not in result.stdout:
-            self.log_test("test_run_comprehensive", False, "Image not found in images list")
-            return False
-            
-        # Test 1: echo foo
-        test1 = self.bocker_run_test(img_id, 'echo foo', 'foo')
-        self.log_test("test_run_echo", test1, "echo foo test")
-        
-        # Test 2: uname
-        test2 = self.bocker_run_test(img_id, 'uname', 'Linux')
-        self.log_test("test_run_uname", test2, "uname test")
-        
-        # Test 3: Process isolation
-        test3 = self.bocker_run_test(img_id, 'cat /proc/self/stat', '1 (cat)')
-        self.log_test("test_run_process_isolation", test3, "process isolation test")
-        
-        return test1 and test2 and test3
-        
-    def test_commit_workflow(self):
-        """Test the complete commit workflow"""
-        # Initialize image
-        result = subprocess.run(['python3', 'bocker.py', 'init', self.base_image_path], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        if not result.stdout.startswith('Created: img_'):
-            self.log_test("test_commit_workflow", False, "Failed to create image")
-            return False
-            
-        img_id = result.stdout.split()[-1]
-        time.sleep(1)
-        
-        # Test wget command (should fail)
-        subprocess.run(['python3', 'bocker.py', 'run', img_id, 'wget'], 
-                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        
-        # Get container ID for wget test
-        result = subprocess.run(['python3', 'bocker.py', 'ps'], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        wget_ps = None
-        for line in result.stdout.split('\n')[1:]:
-            if 'wget' in line:
-                wget_ps = line.split()[0]
-                break
-                
-        if wget_ps:
-            # Check logs
-            result = subprocess.run(['python3', 'bocker.py', 'logs', wget_ps], 
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-            wget_failed = "command not found" in result.stdout or "not found" in result.stdout
-            self.log_test("test_wget_initially_fails", wget_failed, "wget should fail initially")
-            
-            # Clean up
-            subprocess.run(['python3', 'bocker.py', 'rm', wget_ps], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        
-        # Install wget
-        subprocess.run(['python3', 'bocker.py', 'run', img_id, 'yum', 'install', '-y', 'wget'], 
-                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        
-        # Get container ID for yum install
-        result = subprocess.run(['python3', 'bocker.py', 'ps'], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        yum_ps = None
-        for line in result.stdout.split('\n')[1:]:
-            if 'yum install -y wget' in line:
-                yum_ps = line.split()[0]
-                break
-                
-        if not yum_ps:
-            self.log_test("test_commit_workflow", False, "Could not find yum install container")
-            return False
-            
-        # Commit changes
-        subprocess.run(['python3', 'bocker.py', 'commit', yum_ps, img_id], 
-                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        
-        # Test wget again (should work now)
-        subprocess.run(['python3', 'bocker.py', 'run', img_id, 'wget', '-qO-', 'http://httpbin.org/get'], 
-                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        
-        # Get container ID for wget test
-        result = subprocess.run(['python3', 'bocker.py', 'ps'], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        wget_success_ps = None
-        for line in result.stdout.split('\n')[1:]:
-            if 'wget -qO- http://httpbin.org/get' in line:
-                wget_success_ps = line.split()[0]
-                break
-                
-        if wget_success_ps:
-            result = subprocess.run(['python3', 'bocker.py', 'logs', wget_success_ps], 
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-            wget_success = 'http://httpbin.org/get' in result.stdout
-            self.log_test("test_wget_after_install", wget_success, "wget should work after install")
-            return wget_success
-            
-        return False
-        
-    def test_pull_workflow(self):
-        """Test pulling images from Docker Hub"""
-        # Pull CentOS 7
-        result = subprocess.run(['python3', 'bocker.py', 'pull', 'centos', '7'], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        
-        if 'Created: img_' not in result.stdout:
-            self.log_test("test_pull_centos", False, "Failed to pull CentOS image")
-            return False
-            
-        centos_img = result.stdout.split()[-1]
-        
-        # Test CentOS release
-        subprocess.run(['python3', 'bocker.py', 'run', centos_img, 'cat', '/etc/redhat-release'], 
-                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        
-        # Get container and check logs
-        result = subprocess.run(['python3', 'bocker.py', 'ps'], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        ps_id = None
-        for line in result.stdout.split('\n')[1:]:
-            if 'cat /etc/redhat-release' in line:
-                ps_id = line.split()[0]
-                break
-                
-        if ps_id:
-            result = subprocess.run(['python3', 'bocker.py', 'logs', ps_id], 
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-            centos_test = 'CentOS Linux release 7' in result.stdout
-            self.log_test("test_pull_centos", centos_test, "CentOS version check")
-            
-            # Clean up
-            subprocess.run(['python3', 'bocker.py', 'rm', ps_id], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            return centos_test
-            
-        return False
-        
-    def test_rm_functionality(self):
-        """Test removal of images and containers"""
-        # Create image
-        result = subprocess.run(['python3', 'bocker.py', 'init', self.base_image_path], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        if not result.stdout.startswith('Created: img_'):
-            self.log_test("test_rm_functionality", False, "Failed to create image")
-            return False
-            
-        img_id = result.stdout.split()[-1]
-        
-        # Create container
-        cmd = "echo {}".format(random.randint(1000, 9999))
-        subprocess.run(['python3', 'bocker.py', 'run', img_id] + cmd.split(), 
-                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        
-        # Get container ID
-        result = subprocess.run(['python3', 'bocker.py', 'ps'], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        ps_id = None
-        for line in result.stdout.split('\n')[1:]:
-            if cmd in line:
-                ps_id = line.split()[0]
-                break
-                
-        if not ps_id:
-            self.log_test("test_rm_functionality", False, "Could not find container")
-            return False
-            
-        # Verify they exist
-        result = subprocess.run(['python3', 'bocker.py', 'images'], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        img_exists_before = img_id in result.stdout
-        
-        result = subprocess.run(['python3', 'bocker.py', 'ps'], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        ps_exists_before = cmd in result.stdout
-        
-        # Remove them
-        subprocess.run(['python3', 'bocker.py', 'rm', img_id], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        subprocess.run(['python3', 'bocker.py', 'rm', ps_id], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        
-        # Verify they're gone
-        result = subprocess.run(['python3', 'bocker.py', 'images'], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        img_exists_after = img_id in result.stdout
-        
-        result = subprocess.run(['python3', 'bocker.py', 'ps'], 
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        ps_exists_after = cmd in result.stdout
-        
-        success = (img_exists_before and ps_exists_before and 
-                  not img_exists_after and not ps_exists_after)
-        
-        self.log_test("test_rm_functionality", success, 
-                     "Before: img={}, ps={}; After: img={}, ps={}".format(
-                         img_exists_before, ps_exists_before,
-                         img_exists_after, ps_exists_after))
-        
-        return success
-        
-    def run_all_tests(self):
-        """Run all tests in the suite"""
-        print("Starting Bocker Test Suite...")
-        print("=" * 50)
-        
-        # Run teardown first to clean slate
-        self.teardown()
-        
-        tests = [
-            self.test_images_header,
-            self.test_ps_header,
-            self.test_init,
-            self.test_run_comprehensive,
-            self.test_commit_workflow,
-            self.test_rm_functionality,
-        ]
-        
-        passed = 0
-        total = len(tests)
-        
-        for test in tests:
-            try:
-                if test():
-                    passed += 1
-            except Exception as e:
-                self.log_test(test.__name__, False, "Exception: {}".format(e))
-                
-        # Final teardown
-        self.teardown()
-        
-        print("=" * 50)
-        print("Test Results: {}/{} tests passed".format(passed, total))
-        print("=" * 50)
-        
-        for result in self.test_results:
-            print(result)
-            
-        return passed == total
-
-# %%
-
-def test_bocker_comprehensive():
-    """
-    Run comprehensive tests for Bocker functionality.
-    """
-    test_suite = BockerTestSuite()
-    success = test_suite.run_all_tests()
-    
-    if success:
-        print("\n🎉 All tests passed! Bocker implementation is working correctly.")
-    else:
-        print("\n❌ Some tests failed. Please check the implementation.")
-        
-    return success
-
-# Run the comprehensive test suite
-test_bocker_comprehensive()
+if __name__ == '__main__':
+    sys.exit(main())
