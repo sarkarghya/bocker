@@ -1,170 +1,73 @@
 #!/usr/bin/env bash
 set -o errexit -o nounset -o pipefail
 
-echo "========================================="
-echo "BOCKER INTEGRATION TEST - SLOW VERSION"
-echo "========================================="
-echo "Starting comprehensive container testing..."
-echo ""
-
 # Initialize a new container from base image and capture the image ID
-echo "STEP 1: Creating new image from base..."
-echo "Command: ./bocker init ~/base-image"
-sleep 3
 img="$(./bocker init ~/base-image | awk '{print $2}')"
-echo "✓ Created image: $img"
-echo "Waiting 5 seconds for image creation to stabilize..."
-sleep 5
+echo "DEBUG: Created image: $img"
+
+sleep 1
 
 # Check if the image exists in the image list
-echo ""
-echo "STEP 2: Verifying image exists in registry..."
-echo "Command: ./bocker images | grep -qw \"$img\""
-sleep 2
+echo "DEBUG: Checking if image exists in image list..."
 ./bocker images | grep -qw "$img"
 [[ "$?" == 0 ]]
-echo "✓ Image verification passed - image is properly registered"
-echo "Pausing for 3 seconds..."
-sleep 3
+echo "DEBUG: Image verification passed"
 
-echo ""
-echo "STEP 3: Installing procps-ng package..."
-echo "This will take some time as we're installing system packages..."
-echo "Command: ./bocker run \"$img\" yum install -y procps-ng"
-sleep 2
+echo "# Installing procps-ng package..."
 ./bocker run "$img" yum install -y procps-ng
-echo "Package installation completed. Finding container ID..."
-sleep 3
 ps="$(./bocker ps | grep 'yum install -y procps-ng' | awk '{print $1}')"
-echo "✓ Container ID for yum install: $ps"
-echo "Waiting 4 seconds before committing changes..."
-sleep 4
+echo "# Container ID for yum install: $ps"
 
-echo ""
-echo "STEP 4: Committing changes to create new image layer..."
-echo "Command: ./bocker commit \"$ps\" \"$img\""
-sleep 2
 ./bocker commit "$ps" "$img"
-echo "✓ Committed changes to image $img"
-echo "Allowing 5 seconds for commit to complete..."
-sleep 5
+echo "# Committed changes to image $img"
 
-echo ""
-echo "========================================="
-echo "RACE CONDITION TEST SECTION"
-echo "========================================="
-echo "This section tests concurrent container operations..."
-sleep 3
-
-echo ""
-echo "STEP 5: Starting background container with delayed command..."
-echo "Command: ./bocker run \"$img\" \"sleep 5 && ps aux\" &"
-echo "This container will sleep for 5 seconds, then run ps aux"
-sleep 2
+# ▼ ▼ ▼ Race condition waiting to happen ▼ ▼ ▼
+echo "DEBUG: Starting background container with 'sleep 5 && ps aux'"
 ./bocker run "$img" "sleep 5 && ps aux" &
-echo "✓ Background process started"
-echo "Waiting 4 seconds to let container get into sleep state..."
-sleep 4
-
-echo ""
-echo "STEP 6: Locating the sleeping container..."
-echo "Command: ./bocker ps"
-./bocker ps
-echo ""
-echo "Searching for container running 'sleep 5' command..."
+echo "DEBUG: Background process started, waiting 2 seconds..."
 sleep 2
+
+# Try to find the container process by searching for 'sleep 5'
+echo "DEBUG: Looking for container with 'sleep 5' command..."
+./bocker ps
 ps="$(./bocker ps | grep 'sleep 5' | awk '{print $1}')"
-echo "✓ Found container process ID: $ps"
-echo "Waiting 3 seconds before attempting exec..."
-sleep 3
+echo "DEBUG: Found container process ID: $ps"
 
-echo ""
-echo "STEP 7: Executing command inside running container..."
-echo "Command: ./bocker exec \"$ps\" ps aux | wc -l"
-echo "This should show processes running inside the container..."
-sleep 2
+# Execute ps aux inside the running container and count lines
+echo "DEBUG: Executing 'ps aux' inside container $ps..."
 exec="$(./bocker exec "$ps" ps aux | wc -l)"
-echo "✓ ps aux output has $exec lines"
-echo "Verifying we got exactly 4 lines (expected for minimal container)..."
-sleep 2
+echo "DEBUG: ps aux output has $exec lines (expecting 4)"
 [[ "$exec" == "4" ]]
-echo "✓ Line count assertion passed - container is running correctly"
+echo "DEBUG: Line count assertion passed"
 
-echo ""
-echo "Waiting 6 seconds for background process to complete its sleep cycle..."
-echo "The container should finish its 'sleep 5 && ps aux' command..."
-sleep 6
-echo "✓ Background process should be finished now"
-
-echo ""
-echo "========================================="
-echo "CONTAINER LIFECYCLE TEST SECTION"
-echo "========================================="
-sleep 2
-
-echo ""
-echo "STEP 8: Running quick command that will exit immediately..."
-echo "Command: ./bocker run \"$img\" ps aux"
-echo "This container will run ps aux and then exit"
+echo "DEBUG: Waiting 3 more seconds for background process to complete..."
 sleep 3
+echo "DEBUG: Background process should be finished now"
+# ▲ ▲ ▲ Race condition waiting to happen ▲ ▲ ▲
+
+# Run a simple ps aux command (this should complete quickly and exit)
+echo "DEBUG: Running 'ps aux' command in new container..."
 ./bocker run "$img" ps aux
-echo "✓ ps aux command completed and container exited"
-echo "Waiting 4 seconds for container cleanup..."
-sleep 4
+echo "DEBUG: ps aux command completed"
 
-echo ""
-echo "STEP 9: Finding the exited container..."
-echo "Command: ./bocker ps"
+# Find the container that just ran ps aux
+echo "DEBUG: Looking for container that ran 'ps aux'..."
 ./bocker ps
-echo ""
-echo "Searching for container that ran 'ps aux'..."
-sleep 2
 ps="$(./bocker ps | grep 'ps aux' | awk '{print $1}')"
-echo "✓ Found ps aux container ID: $ps"
-echo "Waiting 3 seconds before testing exec on exited container..."
-sleep 3
+echo "DEBUG: Found ps aux container ID: $ps"
 
-echo ""
-echo "STEP 10: Testing exec on exited container (should fail gracefully)..."
-echo "Command: ./bocker exec \"$ps\" ps aux"
-echo "This should return an error message since the container has exited..."
-sleep 2
+# Try to exec into a container that has already exited (should fail)
+echo "DEBUG: Attempting to exec into exited container $ps..."
 exec="$(./bocker exec "$ps" ps aux)" || true
-echo "Exec result: '$exec'"
-sleep 2
+echo "DEBUG: Exec result: $exec"
 [[ "$exec" == "Container '$ps' exists but is not running" ]]
-echo "✓ Confirmed container exists but is not running - proper error handling"
-echo "Pausing for 4 seconds..."
-sleep 4
+echo "DEBUG: Confirmed container exists but is not running"
 
-echo ""
-echo "========================================="
-echo "ERROR HANDLING TEST SECTION"
-echo "========================================="
-sleep 2
-
-echo ""
-echo "STEP 11: Testing exec on non-existent container..."
-echo "Command: ./bocker exec foo ps aux"
-echo "This should return an error for non-existent container 'foo'..."
-sleep 3
+# Try to exec into a non-existent container (should fail)
+echo "DEBUG: Attempting to exec into non-existent container 'foo'..."
 exec="$(./bocker exec foo ps aux)" || true
-echo "Exec result: '$exec'"
-sleep 2
+echo "DEBUG: Exec result: $exec"
 [[ "$exec" == "No container named 'foo' exists" ]]
-echo "✓ Confirmed non-existent container error message is correct"
-echo "Final pause for 5 seconds..."
-sleep 5
+echo "DEBUG: Confirmed non-existent container error message"
 
-echo ""
-echo "========================================="
-echo "ALL TESTS COMPLETED SUCCESSFULLY! 🎉"
-echo "========================================="
-echo "Summary:"
-echo "- Image creation and verification: ✓"
-echo "- Package installation and commit: ✓"
-echo "- Race condition handling: ✓"
-echo "- Container lifecycle management: ✓"
-echo "- Error handling: ✓"
-echo ""
-echo "Bocker container system is functioning correctly!"
+echo "DEBUG: All tests completed successfully"
