@@ -5,7 +5,7 @@ set -o errexit -o nounset -o pipefail
 img="$(./bocker init ~/base-image | awk '{print $2}')"
 echo "DEBUG: Created image: $img"
 
-sleep 1
+sleep 5
 
 # Check if the image exists in the image list
 echo "DEBUG: Checking if image exists in image list..."
@@ -22,52 +22,19 @@ echo "# Container ID for yum install: $ps"
 echo "# Committed changes to image $img"
 
 # ▼ ▼ ▼ Race condition waiting to happen ▼ ▼ ▼
-echo "DEBUG: Starting background container with 'sleep 5 && ps aux'"
 ./bocker run "$img" "sleep 5 && ps aux" &
-echo "DEBUG: Background process started, waiting 2 seconds..."
 sleep 2
-
-# Try to find the container process by searching for 'sleep 5'
-echo "DEBUG: Looking for container with 'sleep 5' command..."
-./bocker ps
 ps="$(./bocker ps | grep 'sleep 5' | awk '{print $1}')"
-echo "DEBUG: Found container process ID: $ps"
-
-# Execute ps aux inside the running container and count lines
-echo "DEBUG: Executing 'ps aux' inside container $ps..."
 exec="$(./bocker exec "$ps" ps aux | wc -l)"
 echo "DEBUG: ps aux output has $exec lines (expecting 4)"
 [[ "$exec" == "4" ]]
-echo "DEBUG: Line count assertion passed"
-
-echo "DEBUG: Waiting 3 more seconds for background process to complete..."
 sleep 3
-echo "DEBUG: Background process should be finished now"
 # ▲ ▲ ▲ Race condition waiting to happen ▲ ▲ ▲
 
-# Run a simple ps aux command (this should complete quickly and exit)
-echo "DEBUG: Running 'ps aux' command in new container..."
 ./bocker run "$img" ps aux
-echo "DEBUG: ps aux command completed"
-
-# Find the container that just ran ps aux
-echo "DEBUG: Looking for container that ran 'ps aux'..."
-./bocker ps
 ps="$(./bocker ps | grep 'ps aux' | awk '{print $1}')"
-echo "DEBUG: Found ps aux container ID: $ps"
-
-# Try to exec into a container that has already exited (should fail)
-echo "DEBUG: Attempting to exec into exited container $ps..."
 exec="$(./bocker exec "$ps" ps aux)" || true
-echo "DEBUG: Exec result: $exec"
 [[ "$exec" == "Container '$ps' exists but is not running" ]]
-echo "DEBUG: Confirmed container exists but is not running"
 
-# Try to exec into a non-existent container (should fail)
-echo "DEBUG: Attempting to exec into non-existent container 'foo'..."
 exec="$(./bocker exec foo ps aux)" || true
-echo "DEBUG: Exec result: $exec"
 [[ "$exec" == "No container named 'foo' exists" ]]
-echo "DEBUG: Confirmed non-existent container error message"
-
-echo "DEBUG: All tests completed successfully"

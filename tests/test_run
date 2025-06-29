@@ -17,53 +17,53 @@ function bocker_run_test() {
 
 # Initialize a new image from ~/base-image and extract the image ID
 img="$(./bocker init ~/base-image | awk '{print $2}')"
-echo "# Created image with ID: $img"
+#echo "# Created image with ID: $img"
 
 sleep 4
 # Verify the image appears in the images list
 ./bocker images | grep -qw "$img"
-echo "# Image verification exit code: $?"
+#echo "# Image verification exit code: $?"
 [[ "$?" == 0 ]]
-echo "# Image successfully found in bocker images list"
+#echo "# Image successfully found in bocker images list"
 
 # Test 1: Run 'echo foo' and expect 'foo' in output
-echo "# Running test 1: echo foo"
+#echo "# Running test 1: echo foo"
 [[ "$(bocker_run_test "$img" 'echo foo' 'foo')" == 0 ]]
-echo "# Test 1 completed successfully"
+#echo "# Test 1 completed successfully"
 
 # Test 2: Run 'uname' and expect 'Linux' in output
-echo "# Running test 2: uname"
+#echo "# Running test 2: uname"
 [[ "$(bocker_run_test "$img" 'uname' 'Linux')" == 0 ]]
-echo "# Test 2 completed successfully"
+#echo "# Test 2 completed successfully"
 
 # Test 3: Check process isolation - cat should show PID 1
-echo "# Running test 3: process isolation check"
+#echo "# Running test 3: process isolation check"
 [[ "$(bocker_run_test "$img" 'cat /proc/self/stat' '1 (cat)')" == 0 ]]
-echo "# Test 3 completed successfully - process isolation working"
+#echo "# Test 3 completed successfully - process isolation working"
 
 # Install iproute package in a container
-echo "# Installing iproute package..."
+#echo "# Installing iprroute package..."
 ./bocker run "$img" yum install -y iproute
 ps="$(./bocker ps | grep 'yum install -y iproute' | awk '{print $1}')"
-echo "# Container ID for yum install: $ps"
+#echo "# Container ID for yum install: $ps"
 
 # Commit the changes to create a new image layer
 ./bocker commit "$ps" "$img"
-echo "# Committed changes to image $img"
+#echo "# Committed changes to image $img"
 
 # Test 4: Verify network interface setup (should show veth1_ps_ interface)
-echo "# Running test 4: network interface check"
+#echo "# Running test 4: network interface check"
 [[ "$(bocker_run_test "$img" 'ip addr' 'veth1_ps_')" == 0 ]]
-echo "# Test 4 completed successfully - network interfaces configured"
+#echo "# Test 4 completed successfully - network interfaces configured"
 
 # Test 5: Test external connectivity to Google DNS
-echo "# Running test 5: external DNS connectivity"
+#echo "# Running test 5: external DNS connectivity"
 [[ "$(bocker_run_test "$img" 'ping -c 1 8.8.8.8' '0% packet loss')" == 0 ]]
-echo "# Test 5 completed successfully - can reach 8.8.8.8"
+#echo "# Test 5 completed successfully - can reach 8.8.8.8"
 
 # Test 6: Test DNS resolution and connectivity
-echo "# Running test 6: DNS resolution and connectivity"
+#echo "# Running test 6: DNS resolution and connectivity"
 [[ "$(bocker_run_test "$img" 'ping -c 1 google.com' '0% packet loss')" == 0 ]]
-echo "# Test 6 completed successfully - DNS resolution working"
+#echo "# Test 6 completed successfully - DNS resolution working"
 
-echo "# All tests completed successfully!"
+#echo "# All tests completed successfully!"
