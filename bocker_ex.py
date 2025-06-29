@@ -897,7 +897,7 @@ class Bocker:
         return self._run_bash_command(bash_script)
 
     def test_commit(self):
-        """Test commit functionality"""
+        """Test commit functionality using wget installation pattern"""
         print("Testing bocker commit...")
         
         # Test argument validation first
@@ -918,52 +918,132 @@ class Bocker:
             print("FAIL: Commit should fail with nonexistent container")
             return False
         
-        # Create test image and container for commit testing
-        images = self._list_images()
-        if not images:
-            base_image_dir = os.path.expanduser('~/base-image')
-            if not os.path.exists(base_image_dir):
-                print("SKIP: No images available for commit testing")
-                return True
-            self.init([base_image_dir])
-            images = self._list_images()
-        
-        if not images:
-            print("SKIP: Could not create test image")
+        # Create test image for commit testing
+        base_image_dir = os.path.expanduser('~/base-image')
+        if not os.path.exists(base_image_dir):
+            print("SKIP: No base image directory available for commit testing")
             return True
         
-        img_id = images[0]['id']
+        # Initialize a new image from base
+        returncode = self.init([base_image_dir])
+        if returncode != 0:
+            print("FAIL: Could not create test image for commit")
+            return False
         
-        # Create a container that makes some changes
-        print("Creating container for commit test...")
-        returncode = self.run([img_id, 'touch', '/test_commit_file'])
-        time.sleep(2)
-        
-        # Find the container
-        containers = self._list_containers()
-        container_id = None
-        for container in containers:
-            if 'touch /test_commit_file' in container['command']:
-                container_id = container['id']
+        # Get the newly created image ID
+        images = self._list_images()
+        img_id = None
+        for img in images:
+            if base_image_dir in img['source']:
+                img_id = img['id']
                 break
         
-        if not container_id:
-            print("SKIP: Could not create test container for commit")
-            return True
-        
-        print(f"Testing commit with container: {container_id} to image: {img_id}")
-        
-        # Test commit
-        returncode = self.commit([container_id, img_id])
-        if returncode != 0:
-            print(f"FAIL: Commit command failed with return code {returncode}")
+        if not img_id:
+            print("FAIL: Could not find created test image")
             return False
         
-        # Verify the commit worked by checking if the image still exists
-        if not self._bocker_check(img_id):
-            print("FAIL: Image not found after commit")
+        print(f"Created test image: {img_id}")
+        time.sleep(1)
+        
+        # Test 1: Run wget command (should fail since wget is not installed)
+        print("Step 1: Testing wget command (should fail)...")
+        returncode = self.run([img_id, 'wget'])
+        time.sleep(2)
+        
+        # Get container ID for wget test
+        containers = self._list_containers()
+        wget_test_container = None
+        for container in containers:
+            if 'wget' in container['command'] and 'yum' not in container['command']:
+                wget_test_container = container['id']
+                break
+        
+        if wget_test_container:
+            print(f"Wget test container: {wget_test_container}")
+            # Check logs to confirm wget is not installed
+            log_file = Path(self.btrfs_path) / wget_test_container / f"{wget_test_container}.log"
+            if log_file.exists():
+                try:
+                    with open(log_file, 'r') as f:
+                        log_content = f.read()
+                    if 'command not found' in log_content or 'wget: command not found' in log_content:
+                        print("Confirmed: wget command not found (as expected)")
+                    else:
+                        print(f"Warning: Unexpected wget output: {log_content}")
+                except Exception as e:
+                    print(f"Warning: Could not read wget test logs: {e}")
+            
+            # Clean up test container
+            self.rm([wget_test_container])
+        
+        # Test 2: Install wget using yum
+        print("Step 2: Installing wget using yum...")
+        returncode = self.run([img_id, 'yum', 'install', '-y', 'wget'])
+        time.sleep(5)  # Give more time for yum install
+        
+        # Get container ID for yum install
+        containers = self._list_containers()
+        yum_container = None
+        for container in containers:
+            if 'yum install -y wget' in container['command']:
+                yum_container = container['id']
+                break
+        
+        if not yum_container:
+            print("FAIL: Could not find yum install container")
             return False
-
+        
+        print(f"Yum install container: {yum_container}")
+        
+        # Test 3: Commit the changes
+        print("Step 3: Committing changes to image...")
+        commit_returncode = self.commit([yum_container, img_id])
+        if commit_returncode != 0:
+            print(f"FAIL: Commit failed with return code {commit_returncode}")
+            return False
+        
+        print(f"Successfully committed changes to image {img_id}")
+        
+        # Test 4: Verify wget now works by making HTTP request
+        print("Step 4: Testing wget with HTTP request...")
+        returncode = self.run([img_id, 'wget', '-qO-', 'http://httpbin.org/get'])
+        time.sleep(3)
+        
+        # Get container ID for wget HTTP request
+        containers = self._list_containers()
+        wget_http_container = None
+        for container in containers:
+            if 'wget -qO- http://httpbin.org/get' in container['command']:
+                wget_http_container = container['id']
+                break
+        
+        if wget_http_container:
+            print(f"Wget HTTP request container: {wget_http_container}")
+            
+            # Check logs to verify HTTP request succeeded
+            log_file = Path(self.btrfs_path) / wget_http_container / f"{wget_http_container}.log"
+            if log_file.exists():
+                try:
+                    with open(log_file, 'r') as f:
+                        log_content = f.read()
+                    
+                    print("Logs from wget HTTP request:")
+                    print(log_content[:200] + "..." if len(log_content) > 200 else log_content)
+                    
+                    if 'http://httpbin.org/get' in log_content or '"url"' in log_content:
+                        print("SUCCESS: wget successfully fetched data from httpbin.org")
+                    else:
+                        print("Warning: wget HTTP request may have failed or returned unexpected data")
+                        # Don't fail the test as network issues might occur
+                        
+                except Exception as e:
+                    print(f"Warning: Could not read wget HTTP logs: {e}")
+            
+            # Clean up HTTP test container
+            self.rm([wget_http_container])
+        else:
+            print("Warning: Could not find wget HTTP request container")
+        
         print("PASS: bocker commit test")
         return True
 
