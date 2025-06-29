@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
+import glob
+import ipaddress
+import json
+import logging
+import os
+import random
+import requests
+import shutil
 import subprocess
 import sys
-import os
+import tarfile
 import tempfile
-import json
-import shutil
 import time
-import random
-import logging
-import ipaddress
-import glob
-from pathlib import Path
-from dataclasses import dataclass
-from typing import Optional, List, Dict
 from contextlib import contextmanager
+from dataclasses import dataclass
+from dotenv import load_dotenv
+from pathlib import Path
+from typing import Optional, List, Dict
 
 @dataclass
 class BockerConfig:
@@ -160,15 +163,6 @@ class Bocker:
 
     def pull(self, args):
         """Pull an image from cloud storage: BOCKER pull <name> <tag>"""
-        import os
-        import sys
-        import requests
-        import tarfile
-        import json
-        import tempfile
-        import shutil
-        from dotenv import load_dotenv
-        
         if len(args) < 2:
             print("Usage: bocker pull <name> <tag>", file=sys.stderr)
             return 1
