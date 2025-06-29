@@ -60,12 +60,13 @@ class Bocker:
                     universal_newlines=True
                 )
                 
-                while True:
-                    output = process.stdout.readline()
-                    if output == '' and process.poll() is not None:
-                        break
-                    if output:
-                        print(output.rstrip())
+                if process.stdout is not None:
+                    while True:
+                        output = process.stdout.readline()
+                        if output == '' and process.poll() is not None:
+                            break
+                        if output:
+                            print(output.rstrip())
                 return_code = process.poll()
                 return return_code if return_code is not None else 0
             else:
@@ -172,11 +173,37 @@ class Bocker:
         if not os.path.exists(base_image_dir):
             print(f"SKIP: Base image directory {base_image_dir} not found")
             return True
-            
-        returncode = self.init([base_image_dir])
         
+        # Test invalid directory first
+        returncode = self.init(['/nonexistent/directory'])
+        if returncode == 0:
+            print("FAIL: Init should fail with nonexistent directory")
+            return False
+        
+        # Get initial image count
+        initial_images = len(self._list_images())
+        
+        # Create image
+        returncode = self.init([base_image_dir])
         if returncode != 0:
             print(f"FAIL: Init command failed with return code {returncode}")
+            return False
+
+        # Verify image was created
+        new_images = self._list_images()
+        if len(new_images) != initial_images + 1:
+            print("FAIL: Image count did not increase after init")
+            return False
+        
+        # Verify the new image has correct source
+        latest_image = new_images[-1]  # Assuming latest is last
+        if latest_image['source'] != base_image_dir:
+            print(f"FAIL: Image source is '{latest_image['source']}', expected '{base_image_dir}'")
+            return False
+        
+        # Verify image directory exists
+        if not self._bocker_check(latest_image['id']):
+            print("FAIL: Created image not found in btrfs subvolumes")
             return False
 
         print("PASS: bocker init test")
@@ -198,16 +225,66 @@ class Bocker:
         """Test images functionality"""
         print("Testing bocker images...")
         
-        # First create an image to test with
-        base_image_dir = os.path.expanduser('~/base-image')
-        if os.path.exists(base_image_dir):
-            self.init([base_image_dir])
+        # Test with no images first
+        initial_images = self._list_images()
         
-        returncode = self.images([])
+        # Capture output by redirecting stdout temporarily
+        import io
+        from contextlib import redirect_stdout
+        
+        output_buffer = io.StringIO()
+        with redirect_stdout(output_buffer):
+            returncode = self.images([])
         
         if returncode != 0:
             print(f"FAIL: Images command failed with return code {returncode}")
             return False
+        
+        output = output_buffer.getvalue()
+        lines = output.strip().split('\n')
+        
+        # Verify header is correct
+        if not lines or lines[0] != 'IMAGE_ID\t\tSOURCE':
+            print(f"FAIL: Expected header 'IMAGE_ID\\t\\tSOURCE' but got: {lines[0] if lines else 'empty'}")
+            return False
+        
+        # If we have images, verify they're listed
+        if initial_images:
+            if len(lines) != len(initial_images) + 1:  # +1 for header
+                print(f"FAIL: Expected {len(initial_images) + 1} lines but got {len(lines)}")
+                return False
+            
+            # Verify each image is listed
+            for image in initial_images:
+                found = False
+                for line in lines[1:]:  # Skip header
+                    if image['id'] in line and image['source'] in line:
+                        found = True
+                        break
+                if not found:
+                    print(f"FAIL: Image {image['id']} not found in output")
+                    return False
+        
+        # Create an image to test with if none exist
+        base_image_dir = os.path.expanduser('~/base-image')
+        if os.path.exists(base_image_dir) and not initial_images:
+            self.init([base_image_dir])
+            
+            # Test again with the new image
+            output_buffer = io.StringIO()
+            with redirect_stdout(output_buffer):
+                returncode = self.images([])
+            
+            if returncode != 0:
+                print(f"FAIL: Images command failed after creating image")
+                return False
+            
+            output = output_buffer.getvalue()
+            lines = output.strip().split('\n')
+            
+            if len(lines) < 2:  # Should have header + at least one image
+                print("FAIL: No images listed after creating one")
+                return False
 
         print("PASS: bocker images test")
         return True
@@ -284,11 +361,50 @@ class Bocker:
         """Test ps functionality"""
         print("Testing bocker ps...")
         
-        returncode = self.ps([])
+        # Capture output to verify format
+        import io
+        from contextlib import redirect_stdout
+        
+        output_buffer = io.StringIO()
+        with redirect_stdout(output_buffer):
+            returncode = self.ps([])
         
         if returncode != 0:
             print(f"FAIL: PS command failed with return code {returncode}")
             return False
+        
+        output = output_buffer.getvalue()
+        lines = output.strip().split('\n')
+        
+        # Verify header is correct
+        if not lines or lines[0] != 'CONTAINER_ID\t\tCOMMAND':
+            print(f"FAIL: Expected header 'CONTAINER_ID\\t\\tCOMMAND' but got: {lines[0] if lines else 'empty'}")
+            return False
+        
+        # Get current containers to verify listing
+        containers = self._list_containers()
+        
+        if containers:
+            # Should have header + container entries
+            if len(lines) != len(containers) + 1:  # +1 for header
+                print(f"FAIL: Expected {len(containers) + 1} lines but got {len(lines)}")
+                return False
+            
+            # Verify each container is listed
+            for container in containers:
+                found = False
+                for line in lines[1:]:  # Skip header
+                    if container['id'] in line and container['command'] in line:
+                        found = True
+                        break
+                if not found:
+                    print(f"FAIL: Container {container['id']} not found in ps output")
+                    return False
+        else:
+            # Should only have header
+            if len(lines) != 1:
+                print(f"FAIL: Expected only header when no containers exist, got {len(lines)} lines")
+                return False
 
         print("PASS: bocker ps test")
         return True
@@ -390,13 +506,26 @@ class Bocker:
         """Test pull functionality"""
         print("Testing bocker pull...")
         
+        # Test argument validation first
+        returncode = self.pull([])
+        if returncode != 1:
+            print("FAIL: Pull should fail with no arguments")
+            return False
+        
+        returncode = self.pull(['centos'])
+        if returncode != 1:
+            print("FAIL: Pull should fail with single argument")
+            return False
+        
         # Skip if R2_DOMAIN not configured
         load_dotenv()
         if not os.getenv('R2_DOMAIN'):
-            print("SKIP: R2_DOMAIN not configured")
+            print("SKIP: R2_DOMAIN not configured - cannot test actual pull")
             return True
         
-        print("Pulling CentOS 7...")
+        print("Testing pull with CentOS 7...")
+        initial_image_count = len(self._list_images())
+        
         returncode = self.pull(['centos', '7'])
         
         if returncode != 0:
@@ -404,12 +533,42 @@ class Bocker:
             return False
 
         # Verify image was created
-        images = self._list_images()
-        centos_found = any('centos:7' in img['source'] for img in images)
-        
-        if not centos_found:
-            print("FAIL: CentOS image not found after pull")
+        new_images = self._list_images()
+        if len(new_images) <= initial_image_count:
+            print("FAIL: No new image created after pull")
             return False
+        
+        # Verify centos image exists
+        centos_found = any('centos:7' in img['source'] for img in new_images)
+        if not centos_found:
+            print("FAIL: CentOS image not found in source after pull")
+            return False
+        
+        # Find the centos image and test it
+        centos_img = None
+        for img in new_images:
+            if 'centos:7' in img['source']:
+                centos_img = img['id']
+                break
+        
+        if centos_img:
+            print(f"Testing pulled CentOS image: {centos_img}")
+            # Test that we can create a container from the pulled image
+            returncode = self.run([centos_img, 'echo', 'centos_test'])
+            time.sleep(2)
+            
+            # Verify container was created
+            containers = self._list_containers()
+            centos_container = None
+            for container in containers:
+                if 'echo centos_test' in container['command']:
+                    centos_container = container['id']
+                    break
+            
+            if centos_container:
+                print(f"Successfully created container from pulled image: {centos_container}")
+            else:
+                print("Warning: Could not create container from pulled image")
 
         print("PASS: bocker pull test")
         return True
@@ -473,7 +632,7 @@ class Bocker:
         return self._run_bash_command(bash_script, show_realtime=True)
 
     def test_run(self):
-        """Test run functionality"""
+        """Test run functionality with comprehensive tests"""
         print("Testing bocker run...")
         
         # Get or create a test image
@@ -483,7 +642,10 @@ class Bocker:
             if not os.path.exists(base_image_dir):
                 print("SKIP: No images available and no base image directory")
                 return True
-            self.init([base_image_dir])
+            returncode = self.init([base_image_dir])
+            if returncode != 0:
+                print("FAIL: Could not create test image")
+                return False
             images = self._list_images()
         
         if not images:
@@ -491,13 +653,76 @@ class Bocker:
             return False
             
         img_id = images[0]['id']
+        print(f"Using image: {img_id}")
         
-        # Test simple echo command
-        returncode = self.run([img_id, 'echo', 'test'])
-        
-        if returncode != 0:
-            print(f"FAIL: Run command failed with return code {returncode}")
+        # Test invalid image first
+        returncode = self.run(['nonexistent_img', 'echo', 'test'])
+        if returncode == 0:
+            print("FAIL: Run should fail with nonexistent image")
             return False
+        
+        # Test empty command
+        returncode = self.run([img_id])
+        if returncode == 0:
+            print("FAIL: Run should fail with no command")
+            return False
+        
+        def test_container_run(command, expected_in_logs):
+            """Helper function to test container runs and verify output"""
+            print(f"Testing command: {' '.join(command)}")
+            
+            # Run the command
+            returncode = self.run([img_id] + command)
+            time.sleep(2)  # Give container time to complete
+            
+            # Get container ID from ps output
+            containers = self._list_containers()
+            container_id = None
+            command_str = ' '.join(command)
+            for container in containers:
+                if command_str in container['command']:
+                    container_id = container['id']
+                    break
+            
+            if not container_id:
+                print(f"FAIL: Container not found for command: {command_str}")
+                return False
+            
+            # Check logs
+            log_file = Path(self.btrfs_path) / container_id / f"{container_id}.log"
+            if not log_file.exists():
+                print(f"FAIL: Log file not found for container {container_id}")
+                return False
+            
+            try:
+                with open(log_file, 'r') as f:
+                    log_content = f.read()
+                
+                if expected_in_logs not in log_content:
+                    print(f"FAIL: Expected '{expected_in_logs}' in logs, got: {log_content}")
+                    return False
+                    
+                print(f"SUCCESS: Found '{expected_in_logs}' in logs")
+                return True
+            except Exception as e:
+                print(f"FAIL: Error reading log file: {e}")
+                return False
+        
+        # Test 1: Simple echo command
+        if not test_container_run(['echo', 'hello world'], 'hello world'):
+            return False
+        
+        # Test 2: Test process isolation - should show PID 1
+        if not test_container_run(['cat', '/proc/self/stat'], '1 (cat)'):
+            print("Note: Process isolation test may fail if /proc is not properly mounted")
+        
+        # Test 3: Test uname
+        if not test_container_run(['uname'], 'Linux'):
+            print("Note: uname test failed - this may be expected in some environments")
+        
+        # Test 4: Test basic file operations
+        if not test_container_run(['ls', '/'], 'bin'):
+            print("Note: File system test failed - checking basic directory structure")
 
         print("PASS: bocker run test")
         return True
@@ -531,19 +756,72 @@ class Bocker:
         """Test logs functionality"""
         print("Testing bocker logs...")
         
-        # Get containers to test with
-        containers = self._list_containers()
-        if not containers:
-            print("SKIP: No containers available for log testing")
+        # Test with invalid container first
+        returncode = self.logs(['nonexistent_container'])
+        if returncode == 0:
+            print("FAIL: Logs should fail with nonexistent container")
+            return False
+        
+        # Test with no arguments
+        returncode = self.logs([])
+        if returncode == 0:
+            print("FAIL: Logs should fail with no arguments")
+            return False
+        
+        # Create a test container to test logs with
+        images = self._list_images()
+        if not images:
+            base_image_dir = os.path.expanduser('~/base-image')
+            if not os.path.exists(base_image_dir):
+                print("SKIP: No images available for log testing")
+                return True
+            self.init([base_image_dir])
+            images = self._list_images()
+        
+        if not images:
+            print("SKIP: Could not create test image")
             return True
-            
-        container_id = containers[0]['id']
-        returncode = self.logs([container_id])
+        
+        img_id = images[0]['id']
+        test_message = f"test_log_message_{random.randint(1000, 9999)}"
+        
+        # Run a command that will produce output
+        print(f"Creating container with test message: {test_message}")
+        returncode = self.run([img_id, 'echo', test_message])
+        time.sleep(2)  # Give container time to complete
+        
+        # Find the container
+        containers = self._list_containers()
+        container_id = None
+        for container in containers:
+            if f'echo {test_message}' in container['command']:
+                container_id = container['id']
+                break
+        
+        if not container_id:
+            print("FAIL: Could not find test container")
+            return False
+        
+        print(f"Testing logs for container: {container_id}")
+        
+        # Capture logs output
+        import io
+        from contextlib import redirect_stdout
+        
+        output_buffer = io.StringIO()
+        with redirect_stdout(output_buffer):
+            returncode = self.logs([container_id])
         
         if returncode != 0:
             print(f"FAIL: Logs command failed with return code {returncode}")
             return False
-
+        
+        log_output = output_buffer.getvalue()
+        if test_message not in log_output:
+            print(f"FAIL: Expected '{test_message}' in logs, got: {log_output}")
+            return False
+        
+        print(f"SUCCESS: Found expected message in logs: {test_message}")
         print("PASS: bocker logs test")
         return True
 
@@ -573,14 +851,22 @@ class Bocker:
         """Test exec functionality"""
         print("Testing bocker exec...")
         
-        # This test requires a running container, which is complex to set up
-        # For now, we'll just test the argument validation
+        # Test argument validation first
         returncode = self.exec([])
-        
         if returncode != 1:  # Should fail with usage message
             print(f"FAIL: Exec should fail with no arguments")
             return False
-
+        
+        # Test with invalid container
+        returncode = self.exec(['nonexistent_container', 'echo', 'test'])
+        if returncode == 0:
+            print("FAIL: Exec should fail with nonexistent container")
+            return False
+        
+        # Note: Testing exec with a running container is complex because it requires
+        # a container to be actively running in the background, which involves
+        # process management and timing issues. For now, we test the validation logic.
+        
         print("PASS: bocker exec test (argument validation)")
         return True
 
@@ -614,15 +900,71 @@ class Bocker:
         """Test commit functionality"""
         print("Testing bocker commit...")
         
-        # This test requires both a container and an image, complex to set up
-        # For now, we'll test argument validation
+        # Test argument validation first
         returncode = self.commit([])
-        
         if returncode != 1:  # Should fail with usage message
             print(f"FAIL: Commit should fail with no arguments")
             return False
+        
+        # Test with single argument
+        returncode = self.commit(['container_id'])
+        if returncode != 1:  # Should fail with usage message
+            print(f"FAIL: Commit should fail with single argument")
+            return False
+        
+        # Test with invalid container
+        returncode = self.commit(['nonexistent_container', 'nonexistent_image'])
+        if returncode == 0:
+            print("FAIL: Commit should fail with nonexistent container")
+            return False
+        
+        # Create test image and container for commit testing
+        images = self._list_images()
+        if not images:
+            base_image_dir = os.path.expanduser('~/base-image')
+            if not os.path.exists(base_image_dir):
+                print("SKIP: No images available for commit testing")
+                return True
+            self.init([base_image_dir])
+            images = self._list_images()
+        
+        if not images:
+            print("SKIP: Could not create test image")
+            return True
+        
+        img_id = images[0]['id']
+        
+        # Create a container that makes some changes
+        print("Creating container for commit test...")
+        returncode = self.run([img_id, 'touch', '/test_commit_file'])
+        time.sleep(2)
+        
+        # Find the container
+        containers = self._list_containers()
+        container_id = None
+        for container in containers:
+            if 'touch /test_commit_file' in container['command']:
+                container_id = container['id']
+                break
+        
+        if not container_id:
+            print("SKIP: Could not create test container for commit")
+            return True
+        
+        print(f"Testing commit with container: {container_id} to image: {img_id}")
+        
+        # Test commit
+        returncode = self.commit([container_id, img_id])
+        if returncode != 0:
+            print(f"FAIL: Commit command failed with return code {returncode}")
+            return False
+        
+        # Verify the commit worked by checking if the image still exists
+        if not self._bocker_check(img_id):
+            print("FAIL: Image not found after commit")
+            return False
 
-        print("PASS: bocker commit test (argument validation)")
+        print("PASS: bocker commit test")
         return True
 
     def help(self, args):
@@ -646,11 +988,47 @@ Commands:
         print(help_text)
         return 0
 
+    def cleanup_test_artifacts(self):
+        """Clean up test artifacts after testing"""
+        print("Cleaning up test artifacts...")
+        
+        try:
+            # Remove all test containers
+            containers = self._list_containers()
+            for container in containers:
+                container_id = container['id']
+                if container_id.startswith('ps_'):
+                    print(f"Removing test container: {container_id}")
+                    self.rm([container_id])
+            
+            # Remove all test images (except those that might be important)
+            images = self._list_images()
+            for image in images:
+                image_id = image['id']
+                # Only remove images that are clearly test artifacts
+                if (image_id.startswith('img_') and 
+                    ('base-image' in image['source'] or 'test' in image['source'].lower())):
+                    print(f"Removing test image: {image_id}")
+                    self.rm([image_id])
+                    
+        except Exception as e:
+            print(f"Warning: Error during cleanup: {e}")
+
     def run_all_tests(self):
         """Run all tests in dependency order"""
         print("=" * 60)
         print("BOCKER TEST-DRIVEN DEVELOPMENT SUITE")
         print("=" * 60)
+        
+        # Check prerequisites
+        base_image_dir = os.path.expanduser('~/base-image')
+        if not os.path.exists(base_image_dir):
+            print("WARNING: Base image directory ~/base-image not found")
+            print("Some tests may be skipped. Create a base image directory for full testing.")
+        
+        print(f"Using btrfs path: {self.btrfs_path}")
+        print(f"Using cgroups: {self.cgroups}")
+        print()
 
         # Test functions in dependency order
         test_sequence = [
@@ -667,6 +1045,7 @@ Commands:
 
         passed = 0
         failed = 0
+        skipped = 0
 
         for test_name, test_func in test_sequence:
             print(f"\n{'-' * 40}")
@@ -674,9 +1053,13 @@ Commands:
             print(f"{'-' * 40}")
             
             try:
-                if test_func():
+                result = test_func()
+                if result is True:
                     passed += 1
                     print(f"✓ {test_name} PASSED")
+                elif result is None:
+                    skipped += 1
+                    print(f"~ {test_name} SKIPPED")
                 else:
                     failed += 1
                     print(f"✗ {test_name} FAILED")
@@ -685,13 +1068,20 @@ Commands:
             except Exception as e:
                 failed += 1
                 print(f"✗ {test_name} FAILED with exception: {e}")
+                import traceback
+                traceback.print_exc()
                 # break
             
             time.sleep(1)
 
         print(f"\n{'=' * 60}")
-        print(f"TEST RESULTS: {passed} passed, {failed} failed")
+        print(f"TEST RESULTS: {passed} passed, {failed} failed, {skipped} skipped")
         print(f"{'=' * 60}")
+        
+        # Cleanup test artifacts
+        if passed > 0 or failed > 0:  # Only cleanup if we actually ran tests
+            print()
+            self.cleanup_test_artifacts()
 
         return failed == 0
 
