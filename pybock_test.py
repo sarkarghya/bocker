@@ -9,7 +9,7 @@ import random
 
 class BockerTester:
     def __init__(self):
-        self.bocker_script = './bocker.py'
+        self.bocker_script = './pymod_boc.py'
         self.base_image_dir = os.path.expanduser('~/base-image')
         
     def run_bocker_command(self, args):
