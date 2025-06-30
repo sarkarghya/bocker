@@ -1,16 +1,74 @@
 #!/usr/bin/env bash
 set -o errexit -o nounset -o pipefail
 
-img="$(./bocker init ~/base-image | awk '{print $2}')"
+# Enable debug mode
+set -x
+
+echo "=== Starting Bocker Test Script ==="
+
+# Initialize image and capture output
+echo "--- Initializing base image ---"
+init_output="$(./bocker init ~/base-image)"
+echo "Init output: $init_output"
+img="$(echo "$init_output" | awk '{print $2}')"
+echo "Extracted image ID: $img"
+
+# Run command in container
 cmd="echo $RANDOM"
+echo "--- Running command: $cmd ---"
 ./bocker run "$img" "$cmd"
-ps="$(./bocker ps | grep "$cmd" | awk '{print $1}')"
 
-[[ "$(./bocker images | grep -c "$img")" == 1 ]]
-[[ "$(./bocker ps | grep -c "$cmd")" == 1 ]]
+# Get process/container ID
+echo "--- Getting process list ---"
+ps_output="$(./bocker ps)"
+echo "PS output:"
+echo "$ps_output"
+ps="$(echo "$ps_output" | grep "$cmd" | awk '{print $1}')"
+echo "Extracted process ID: $ps"
 
+# Verify image exists
+echo "--- Verifying image exists ---"
+images_output="$(./bocker images)"
+echo "Images output:"
+echo "$images_output"
+image_count="$(echo "$images_output" | grep -c "$img")"
+echo "Image count for $img: $image_count"
+[[ "$image_count" == 1 ]]
+echo "✓ Image verification passed"
+
+# Verify process exists
+echo "--- Verifying process exists ---"
+ps_count="$(echo "$ps_output" | grep -c "$cmd")"
+echo "Process count for '$cmd': $ps_count"
+[[ "$ps_count" == 1 ]]
+echo "✓ Process verification passed"
+
+# Remove image
+echo "--- Removing image: $img ---"
 ./bocker rm "$img"
+
+# Remove process/container
+echo "--- Removing process: $ps ---"
 ./bocker rm "$ps"
 
-[[ "$(./bocker images | grep -c "$img")" == 0 ]]
-[[ "$(./bocker ps | grep -c "$cmd")" == 0 ]]
+# Verify image is gone
+echo "--- Verifying image removal ---"
+images_after="$(./bocker images)"
+echo "Images after removal:"
+echo "$images_after"
+image_count_after="$(echo "$images_after" | grep -c "$img" || true)"
+echo "Image count after removal: $image_count_after"
+[[ "$image_count_after" == 0 ]]
+echo "✓ Image removal verified"
+
+# Verify process is gone
+echo "--- Verifying process removal ---"
+ps_after="$(./bocker ps)"
+echo "Processes after removal:"
+echo "$ps_after"
+ps_count_after="$(echo "$ps_after" | grep -c "$cmd" || true)"
+echo "Process count after removal: $ps_count_after"
+[[ "$ps_count_after" == 0 ]]
+echo "✓ Process removal verified"
+
+echo "=== Test completed successfully ==="
