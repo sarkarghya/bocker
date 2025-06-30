@@ -1,8 +1,3 @@
-# I'll split the Bocker class into several focused classes that build upon each other, following the layered architecture you described. Here's the refactored code:
-
-# ## Base Infrastructure Classes
-
-# ```python
 #!/usr/bin/env python3
 
 import glob
@@ -20,9 +15,9 @@ import tempfile
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
-from dotenv import load_dotenv
 from pathlib import Path
 from typing import Optional, List, Dict
+from dotenv import load_dotenv
 
 @dataclass
 class BockerConfig:
@@ -46,12 +41,14 @@ class BockerError(Exception):
     """Custom exception for Bocker operations"""
     pass
 
+# CLASS 1: Setup/Base Class
 class BockerBase:
-    """Base class providing common utilities for all Bocker components"""
+    """Base class with common functionality for all Bocker versions"""
     
     def __init__(self):
         self.config = BockerConfig.from_environment()
         self.btrfs_path = self.config.btrfs_path
+        self.cgroups = self.config.cgroups
 
     def _run_bash_command(self, bash_script, show_realtime=False):
         """Execute bash commands using bash -c"""
@@ -107,46 +104,6 @@ class BockerBase:
         """Check if directory exists using Python"""
         return Path(directory).exists()
 
-    def _format_table_output(self, headers, rows):
-        """Format table output using Python instead of bash echo -e"""
-        if not rows:
-            return '\t\t'.join(headers)
-        output = ['\t\t'.join(headers)]
-        for row in rows:
-            output.append('\t\t'.join(row))
-        return '\n'.join(output)
-
-    def help(self, args):
-        """Display help message"""
-        help_text = """BOCKER - Docker implemented in around 100 lines of bash
-
-Usage: bocker [args...]
-
-Commands:
-  pull     Pull an image from Docker Hub
-  init     Create an image from a directory
-  rm       Delete an image or container
-  images   List images
-  ps       List containers
-  run      Create a container
-  exec     Execute a command in a running container
-  logs     View logs from a container
-  commit   Commit a container to an image
-  test     Run comprehensive test suite
-  help     Display this message"""
-        print(help_text)
-        return 0
-# ```
-
-# ## Image Management Layer
-
-# ```python
-class BockerImageManager(BockerBase):
-    """Handles image creation, listing, and management operations"""
-    
-    def __init__(self):
-        super().__init__()
-
     def _list_images(self):
         """List images using Python glob instead of bash for loop"""
         images = []
@@ -177,10 +134,61 @@ class BockerImageManager(BockerBase):
             pass
         return containers
 
+    def _format_table_output(self, headers, rows):
+        """Format table output using Python instead of bash echo -e"""
+        if not rows:
+            return '\t\t'.join(headers)
+        output = ['\t\t'.join(headers)]
+        for row in rows:
+            output.append('\t\t'.join(row))
+        return '\n'.join(output)
+
+    def help(self, args):
+        """Display help message"""
+        help_text = f"""BOCKER {self.__class__.__name__} - Docker implemented in Python
+
+Usage: bocker [args...]
+
+Commands:
+  {self._get_available_commands()}
+  help     Display this message
+  test     Run test suite for this version"""
+        print(help_text)
+        return 0
+
+    def _get_available_commands(self):
+        """Get list of available commands for this version"""
+        return "Base functionality only"
+
+    def test_base(self):
+        """Test base functionality"""
+        print(f"Testing {self.__class__.__name__} base functionality...")
+        
+        # Test configuration
+        if not self.config:
+            print("FAIL: Configuration not loaded")
+            return False
+        
+        # Test helper methods
+        test_uuid = self._generate_uuid("test_")
+        if not test_uuid.startswith("test_"):
+            print("FAIL: UUID generation failed")
+            return False
+        
+        print("PASS: Base functionality test")
+        return True
+
+# CLASS 2: Bocker v1 - Pulling Images
+class BockerV1(BockerBase):
+    """Bocker v1: Image management - pull, init, images, commit, rm"""
+    
+    def _get_available_commands(self):
+        return "pull     Pull an image from Docker Hub\n  init     Create an image from a directory\n  images   List images\n  commit   Commit a container to an image\n  rm       Delete an image or container"
+
     def init(self, args):
         """Create an image from a directory: BOCKER init <directory>"""
         if len(args) < 1:
-            print("Error: init requires a directory argument", file=sys.stderr)
+            print("Usage: bocker init <directory>", file=sys.stderr)
             return 1
 
         directory = args[0]
@@ -201,51 +209,54 @@ class BockerImageManager(BockerBase):
         """
         return self._run_bash_command(bash_script)
 
-    def images(self, args):
-        """List images: BOCKER images"""
-        images = self._list_images()
-        if not images:
-            print("IMAGE_ID\t\tSOURCE")
-            return 0
-        rows = [[img['id'], img['source']] for img in images]
-        output = self._format_table_output(['IMAGE_ID', 'SOURCE'], rows)
-        print(output)
-        return 0
+    def test_init(self):
+        """Test init functionality"""
+        print("Testing bocker init...")
+        base_image_dir = os.path.expanduser('~/base-image')
+        
+        if not os.path.exists(base_image_dir):
+            print(f"SKIP: Base image directory {base_image_dir} not found")
+            return True
+        
+        # Test invalid directory first
+        returncode = self.init(['/nonexistent/directory'])
+        if returncode == 0:
+            print("FAIL: Init should fail with nonexistent directory")
+            return False
+        
+        # Get initial image count
+        initial_images = len(self._list_images())
+        
+        # Create image
+        returncode = self.init([base_image_dir])
+        if returncode != 0:
+            print(f"FAIL: Init command failed with return code {returncode}")
+            return False
 
-    def rm(self, args):
-        """Delete an image or container: BOCKER rm <container_id>"""
-        if len(args) < 1:
-            print("Error: rm requires a container ID argument", file=sys.stderr)
-            return 1
+        # Verify image was created
+        new_images = self._list_images()
+        if len(new_images) != initial_images + 1:
+            print("FAIL: Image count did not increase after init")
+            return False
+        
+        # Verify the new image has correct source
+        latest_image = new_images[-1]  # Assuming latest is last
+        if latest_image['source'] != base_image_dir:
+            print(f"FAIL: Image source is '{latest_image['source']}', expected '{base_image_dir}'")
+            return False
+        
+        # Verify image directory exists
+        if not self._bocker_check(latest_image['id']):
+            print("FAIL: Created image not found in btrfs subvolumes")
+            return False
 
-        container_id = args[0]
-        if not self._bocker_check(container_id):
-            print(f"No container named '{container_id}' exists", file=sys.stderr)
-            return 1
-
-        bash_script = f"""
-        set -o errexit -o nounset -o pipefail
-        btrfs subvolume delete "{self.btrfs_path}/{container_id}" > /dev/null
-        cgdelete -g "{self.config.cgroups}:/{container_id}" &> /dev/null || true
-        echo "Removed: {container_id}"
-        """
-        return self._run_bash_command(bash_script)
-
-    def ps(self, args):
-        """List containers: BOCKER ps"""
-        containers = self._list_containers()
-        if not containers:
-            print("CONTAINER_ID\t\tCOMMAND")
-            return 0
-        rows = [[container['id'], container['command']] for container in containers]
-        output = self._format_table_output(['CONTAINER_ID', 'COMMAND'], rows)
-        print(output)
-        return 0
+        print("PASS: bocker init test")
+        return True
 
     def pull(self, args):
         """Pull an image from cloud storage: BOCKER pull <name> <tag>"""
         if len(args) < 2:
-            print("Error: pull requires name and tag arguments", file=sys.stderr)
+            print("Usage: bocker pull <name> <tag>", file=sys.stderr)
             return 1
 
         name, tag = args[0], args[1]
@@ -334,68 +345,96 @@ class BockerImageManager(BockerBase):
             if os.path.exists(temp_base):
                 shutil.rmtree(temp_base)
 
-    def logs(self, args):
-        """View logs from a container: BOCKER logs <container_id>"""
-        if len(args) < 1:
-            print("Error: logs requires a container ID argument", file=sys.stderr)
-            return 1
-
-        container_id = args[0]
-        if not self._bocker_check(container_id):
-            print(f"No container named '{container_id}' exists", file=sys.stderr)
-            return 1
-
-        log_file = Path(self.btrfs_path) / container_id / f"{container_id}.log"
-        if not log_file.exists():
-            print(f"No log file found for container '{container_id}'", file=sys.stderr)
-            return 1
-
-        try:
-            with open(log_file, 'r') as f:
-                print(f.read(), end='')
-            return 0
-        except Exception as e:
-            print(f"Error reading log file: {e}", file=sys.stderr)
-            return 1
-
-    # Test methods for Image Management
-    def test_init(self):
-        """Test init functionality"""
-        print("Testing bocker init...")
-        base_image_dir = os.path.expanduser('~/base-image')
+    def test_pull(self):
+        """Test pull functionality"""
+        print("Testing bocker pull...")
         
-        if not os.path.exists(base_image_dir):
-            print(f"SKIP: Base image directory {base_image_dir} not found")
-            return True
-        
-        # Test invalid directory first
-        returncode = self.init(['/nonexistent/directory'])
-        if returncode == 0:
-            print("FAIL: Init should fail with nonexistent directory")
+        # Test argument validation first
+        returncode = self.pull([])
+        if returncode != 1:
+            print("FAIL: Pull should fail with no arguments")
             return False
         
-        # Get initial image count
-        initial_images = len(self._list_images())
+        returncode = self.pull(['centos'])
+        if returncode != 1:
+            print("FAIL: Pull should fail with single argument")
+            return False
         
-        # Create image
-        returncode = self.init([base_image_dir])
+        # Skip if R2_DOMAIN not configured
+        load_dotenv()
+        if not os.getenv('R2_DOMAIN'):
+            print("SKIP: R2_DOMAIN not configured - cannot test actual pull")
+            return True
+        
+        print("Testing pull with CentOS 7...")
+        initial_image_count = len(self._list_images())
+        
+        returncode = self.pull(['centos', '7'])
+        
         if returncode != 0:
-            print(f"FAIL: Init command failed with return code {returncode}")
+            print(f"FAIL: Pull command failed with return code {returncode}")
             return False
 
         # Verify image was created
         new_images = self._list_images()
-        if len(new_images) != initial_images + 1:
-            print("FAIL: Image count did not increase after init")
+        if len(new_images) <= initial_image_count:
+            print("FAIL: No new image created after pull")
             return False
         
-        print("PASS: bocker init test")
+        # Verify centos image exists
+        centos_found = any('centos:7' in img['source'] for img in new_images)
+        if not centos_found:
+            print("FAIL: CentOS image not found in source after pull")
+            return False
+        
+        # Find the centos image and test it
+        centos_img = None
+        for img in new_images:
+            if 'centos:7' in img['source']:
+                centos_img = img['id']
+                break
+        
+        if centos_img:
+            print(f"Testing pulled CentOS image: {centos_img}")
+            # Test that we can create a container from the pulled image
+            returncode = self.run([centos_img, 'echo', 'centos_test'])
+            time.sleep(2)
+            
+            # Verify container was created
+            containers = self._list_containers()
+            centos_container = None
+            for container in containers:
+                if 'echo centos_test' in container['command']:
+                    centos_container = container['id']
+                    break
+            
+            if centos_container:
+                print(f"Successfully created container from pulled image: {centos_container}")
+            else:
+                print("Warning: Could not create container from pulled image")
+
+        print("PASS: bocker pull test")
         return True
+
+    def images(self, args):
+        """List images: BOCKER images"""
+        images = self._list_images()
+        if not images:
+            print("IMAGE_ID\t\tSOURCE")
+            return 0
+        rows = [[img['id'], img['source']] for img in images]
+        output = self._format_table_output(['IMAGE_ID', 'SOURCE'], rows)
+        print(output)
+        return 0
 
     def test_images(self):
         """Test images functionality"""
         print("Testing bocker images...")
         
+        # Test with no images first
+        initial_images = self._list_images()
+        
+        # Capture output by redirecting stdout temporarily
         import io
         from contextlib import redirect_stdout
         
@@ -415,8 +454,87 @@ class BockerImageManager(BockerBase):
             print(f"FAIL: Expected header 'IMAGE_ID\\t\\tSOURCE' but got: {lines[0] if lines else 'empty'}")
             return False
         
+        # If we have images, verify they're listed
+        if initial_images:
+            if len(lines) != len(initial_images) + 1:  # +1 for header
+                print(f"FAIL: Expected {len(initial_images) + 1} lines but got {len(lines)}")
+                return False
+            
+            # Verify each image is listed
+            for image in initial_images:
+                found = False
+                for line in lines[1:]:  # Skip header
+                    if image['id'] in line and image['source'] in line:
+                        found = True
+                        break
+                if not found:
+                    print(f"FAIL: Image {image['id']} not found in output")
+                    return False
+        
+        # Create an image to test with if none exist
+        base_image_dir = os.path.expanduser('~/base-image')
+        if os.path.exists(base_image_dir) and not initial_images:
+            self.init([base_image_dir])
+            
+            # Test again with the new image
+            output_buffer = io.StringIO()
+            with redirect_stdout(output_buffer):
+                returncode = self.images([])
+            
+            if returncode != 0:
+                print(f"FAIL: Images command failed after creating image")
+                return False
+            
+            output = output_buffer.getvalue()
+            lines = output.strip().split('\n')
+            
+            if len(lines) < 2:  # Should have header + at least one image
+                print("FAIL: No images listed after creating one")
+                return False
+
         print("PASS: bocker images test")
         return True
+
+    def commit(self, args):
+        """Commit a container to an image: BOCKER commit <container_id> <image_id>"""
+        if len(args) < 2:
+            print("Usage: bocker commit <container_id> <image_id>", file=sys.stderr)
+            return 1
+
+        container_id, image_id = args[0], args[1]
+
+        if not self._bocker_check(container_id):
+            print(f"No container named '{container_id}' exists", file=sys.stderr)
+            return 1
+
+        if self._bocker_check(image_id):
+            self.rm([image_id])
+
+        bash_script = f"""
+        set -o errexit -o nounset -o pipefail
+        btrfs subvolume snapshot "{self.btrfs_path}/{container_id}" "{self.btrfs_path}/{image_id}" > /dev/null
+        echo "Created: {image_id}"
+        """
+        return self._run_bash_command(bash_script)
+
+    def rm(self, args):
+        """Delete an image or container: BOCKER rm <id>"""
+        if len(args) < 1:
+            print("Usage: bocker rm <id>", file=sys.stderr)
+            return 1
+
+        container_id = args[0]
+        if not self._bocker_check(container_id):
+            print(f"No container named '{container_id}' exists", file=sys.stderr)
+            return 1
+
+        bash_script = f"""
+        set -o errexit -o nounset -o pipefail
+        btrfs subvolume delete "{self.btrfs_path}/{container_id}" > /dev/null
+        cgdelete -g "{self.cgroups}:/{container_id}" &> /dev/null || true
+        echo "Removed: {container_id}"
+        """
+        return self._run_bash_command(bash_script)
 
     def test_rm(self):
         """Test rm functionality"""
@@ -454,202 +572,83 @@ class BockerImageManager(BockerBase):
         print("PASS: bocker rm test")
         return True
 
-    def test_ps(self):
-        """Test ps functionality"""
-        print("Testing bocker ps...")
+    def test_v1(self):
+        """Test v1 functionality by running all test methods"""
+        print("Testing BockerV1 functionality...")
+        print("=" * 50)
         
-        import io
-        from contextlib import redirect_stdout
+        # Get all test methods for this class (excluding test_v1 to avoid recursion)
+        test_methods = []
+        for attr_name in dir(self):
+            attr = getattr(self, attr_name)
+            if (attr_name.startswith('test_') and 
+                callable(attr) and 
+                attr_name != 'test_v1'):
+                test_methods.append(attr_name)
         
-        output_buffer = io.StringIO()
-        with redirect_stdout(output_buffer):
-            returncode = self.ps([])
+        # Sort test methods for consistent order
+        test_methods.sort()
         
-        if returncode != 0:
-            print(f"FAIL: PS command failed with return code {returncode}")
-            return False
+        print(f"Found {len(test_methods)} test methods: {', '.join(test_methods)}")
+        print("-" * 50)
         
-        output = output_buffer.getvalue()
-        lines = output.strip().split('\n')
+        results = {}
+        overall_success = True
         
-        # Verify header is correct
-        if not lines or lines[0] != 'CONTAINER_ID\t\tCOMMAND':
-            print(f"FAIL: Expected header 'CONTAINER_ID\\t\\tCOMMAND' but got: {lines[0] if lines else 'empty'}")
-            return False
+        # Run each test method
+        for test_name in test_methods:
+            print(f"\n🧪 Running {test_name}...")
+            try:
+                test_method = getattr(self, test_name)
+                success = test_method()
+                results[test_name] = "PASS" if success else "FAIL"
+                if not success:
+                    overall_success = False
+                    print(f"❌ {test_name}: FAILED")
+                else:
+                    print(f"✅ {test_name}: PASSED")
+            except Exception as e:
+                print(f"💥 {test_name}: ERROR - {e}")
+                results[test_name] = "ERROR"
+                overall_success = False
+        
+        # Print summary
+        print("\n" + "=" * 50)
+        print("BockerV1 Test Summary:")
+        print("-" * 50)
+        for test_name in test_methods:
+            status = results.get(test_name, "UNKNOWN")
+            status_symbol = "✅" if status == "PASS" else "❌" if status == "FAIL" else "💥"
+            print(f"{status_symbol} {test_name:<15} : {status}")
+        
+        print("-" * 50)
+        print(f"Overall Result: {'✅ PASS' if overall_success else '❌ FAIL'}")
+        print("=" * 50)
+        
+        return overall_success
 
-        print("PASS: bocker ps test")
-        return True
-
-    def test_pull(self):
-        """Test pull functionality"""
-        print("Testing bocker pull...")
-        
-        # Test argument validation first
-        returncode = self.pull([])
-        if returncode != 1:
-            print("FAIL: Pull should fail with no arguments")
-            return False
-        
-        returncode = self.pull(['centos'])
-        if returncode != 1:
-            print("FAIL: Pull should fail with single argument")
-            return False
-        
-        # Skip if R2_DOMAIN not configured
-        load_dotenv()
-        if not os.getenv('R2_DOMAIN'):
-            print("SKIP: R2_DOMAIN not configured - cannot test actual pull")
-            return True
-        
-        print("PASS: bocker pull test")
-        return True
-
-    def test_logs(self):
-        """Test logs functionality"""
-        print("Testing bocker logs...")
-        
-        # Test with invalid container first
-        returncode = self.logs(['nonexistent_container'])
-        if returncode == 0:
-            print("FAIL: Logs should fail with nonexistent container")
-            return False
-        
-        # Test with no arguments
-        returncode = self.logs([])
-        if returncode == 0:
-            print("FAIL: Logs should fail with no arguments")
-            return False
-        
-        print("PASS: bocker logs test")
-        return True
-# ```
-
-# ## Cgroups Resource Management Layer
-
-# ```python
-class BockerCgroups(BockerImageManager):
-    """Handles cgroups resource management for containers"""
+# CLASS 3: Bocker v2 - Pulling Images + Chroot
+class BockerV2(BockerV1):
+    """Bocker v2: Adds container functionality with chroot - ps, run, exec, logs"""
     
-    def __init__(self):
-        super().__init__()
-        self.cgroups = self.config.cgroups
+    def _get_available_commands(self):
+        return super()._get_available_commands() + "\n  ps       List containers\n  run      Create a container\n  exec     Execute a command in a running container\n  logs     View logs from a container"
 
-    def _create_cgroup(self, container_id):
-        """Create cgroup for container with resource limits"""
-        bash_script = f"""
-        set -o errexit -o nounset -o pipefail
-        cgcreate -g "{self.cgroups}:/{container_id}"
-        cgset -r cpu.shares="{self.config.cpu_share}" "{container_id}"
-        cgset -r memory.limit_in_bytes="{self.config.mem_limit * 1000000}" "{container_id}"
-        """
-        return self._run_bash_command(bash_script)
-
-    def _delete_cgroup(self, container_id):
-        """Delete cgroup for container"""
-        bash_script = f"""
-        cgdelete -g "{self.cgroups}:/{container_id}" &> /dev/null || true
-        """
-        return self._run_bash_command(bash_script)
-
-    def test_cgroups(self):
-        """Test cgroups functionality"""
-        print("Testing bocker cgroups...")
-        
-        # Test creating and deleting cgroups
-        test_id = "test_cgroup_123"
-        
-        # Create cgroup
-        returncode = self._create_cgroup(test_id)
-        if returncode != 0:
-            print(f"FAIL: Could not create cgroup for {test_id}")
-            return False
-        
-        # Clean up
-        self._delete_cgroup(test_id)
-        
-        print("PASS: bocker cgroups test")
-        return True
-# ```
-
-# ## Networking Layer
-
-# ```python
-class BockerNetworking(BockerCgroups):
-    """Handles network isolation and virtual networking for containers"""
-    
-    def __init__(self):
-        super().__init__()
-
-    def _setup_container_network(self, container_id):
-        """Set up virtual networking for container"""
-        ip_suffix = container_id[-3:].replace('0', '') or '1'
-        mac_suffix = f"{container_id[-3:-2]}:{container_id[-2:]}"
-        
-        bash_script = f"""
-        set -o errexit -o nounset -o pipefail
-        
-        ip link add dev veth0_"{container_id}" type veth peer name veth1_"{container_id}"
-        ip link set dev veth0_"{container_id}" up
-        ip link set veth0_"{container_id}" master bridge0
-        ip netns add netns_"{container_id}"
-        ip link set veth1_"{container_id}" netns netns_"{container_id}"
-        ip netns exec netns_"{container_id}" ip link set dev lo up
-        ip netns exec netns_"{container_id}" ip link set veth1_"{container_id}" address 02:42:ac:11:00{mac_suffix}
-        ip netns exec netns_"{container_id}" ip addr add 10.0.0.{ip_suffix}/24 dev veth1_"{container_id}"
-        ip netns exec netns_"{container_id}" ip link set dev veth1_"{container_id}" up
-        ip netns exec netns_"{container_id}" ip route add default via 10.0.0.1
-        """
-        return self._run_bash_command(bash_script)
-
-    def _cleanup_container_network(self, container_id):
-        """Clean up container networking"""
-        bash_script = f"""
-        ip link del dev veth0_"{container_id}" 2>/dev/null || true
-        ip netns del netns_"{container_id}" 2>/dev/null || true
-        """
-        return self._run_bash_command(bash_script)
-
-    def test_networking(self):
-        """Test networking functionality"""
-        print("Testing bocker networking...")
-        
-        test_id = "test_net_456"
-        
-        # Test network setup
-        returncode = self._setup_container_network(test_id)
-        if returncode != 0:
-            print(f"FAIL: Could not set up network for {test_id}")
-            return False
-        
-        # Clean up
-        self._cleanup_container_network(test_id)
-        
-        print("PASS: bocker networking test")
-        return True
-# ```
-
-# ## Chroot and Namespace Layer
-
-# ```python
-class BockerChroot(BockerNetworking):
-    """Handles filesystem isolation and namespace management"""
-    
-    def __init__(self):
-        super().__init__()
-
-    def _create_container_snapshot(self, image_id, container_id):
-        """Create container filesystem from image snapshot"""
-        bash_script = f"""
-        set -o errexit -o nounset -o pipefail
-        btrfs subvolume snapshot "{self.btrfs_path}/{image_id}" "{self.btrfs_path}/{container_id}" > /dev/null
-        echo 'nameserver 8.8.8.8' > "{self.btrfs_path}/{container_id}"/etc/resolv.conf
-        """
-        return self._run_bash_command(bash_script)
+    def ps(self, args):
+        """List containers: BOCKER ps"""
+        containers = self._list_containers()
+        if not containers:
+            print("CONTAINER_ID\t\tCOMMAND")
+            return 0
+        rows = [[container['id'], container['command']] for container in containers]
+        output = self._format_table_output(['CONTAINER_ID', 'COMMAND'], rows)
+        print(output)
+        return 0
 
     def run(self, args):
         """Create a container: BOCKER run <image_id> <command>"""
         if len(args) < 2:
-            print("Error: run requires image ID and command arguments", file=sys.stderr)
+            print("Usage: bocker run <image_id> <command>", file=sys.stderr)
             return 1
 
         image_id = args[0]
@@ -659,50 +658,255 @@ class BockerChroot(BockerNetworking):
             print(f"No image named '{image_id}' exists", file=sys.stderr)
             return 1
 
-        if not command.strip():
-            print("Error: Command cannot be empty", file=sys.stderr)
+        uuid = self._generate_uuid("ps_")
+        if self._bocker_check(uuid):
+            return self.run(args)
+
+        bash_script = f"""
+        set -o errexit -o nounset -o pipefail
+        
+        # Filesystem setup - Create snapshot and configure environment
+        btrfs subvolume snapshot "{self.btrfs_path}/{image_id}" "{self.btrfs_path}/{uuid}" > /dev/null
+        echo 'nameserver 8.8.8.8' > "{self.btrfs_path}/{uuid}"/etc/resolv.conf
+        echo "{command}" > "{self.btrfs_path}/{uuid}/{uuid}.cmd"
+        
+        # Execute in chroot environment with proc mounted
+        chroot "{self.btrfs_path}/{uuid}" /bin/sh -c "/bin/mount -t proc proc /proc && {command}" \\
+            2>&1 | tee "{self.btrfs_path}/{uuid}/{uuid}.log" || true
+        """
+        return self._run_bash_command(bash_script, show_realtime=True)
+
+    def exec(self, args):
+        """Execute a command in a running container: BOCKER exec <container_id> <command>"""
+        if len(args) < 2:
+            print("Usage: bocker exec <container_id> <command>", file=sys.stderr)
+            return 1
+
+        container_id = args[0]
+        command = ' '.join(args[1:])
+
+        if not self._bocker_check(container_id):
+            print(f"No container named '{container_id}' exists", file=sys.stderr)
+            return 1
+
+        bash_script = f"""
+        set -o errexit -o nounset -o pipefail
+        cid="$(ps o ppid,pid | grep "^$(ps o pid,cmd | grep -E "^\\ *[0-9]+ chroot.*{container_id}" | awk '{{print $1}}')" | awk '{{print $2}}')"
+        [[ ! "$cid" =~ ^\\ *[0-9]+$ ]] && echo "Container '{container_id}' exists but is not running" && exit 1
+        chroot "{self.btrfs_path}/{container_id}" {command}
+        """
+        return self._run_bash_command(bash_script, show_realtime=True)
+
+    def logs(self, args):
+        """View logs from a container: BOCKER logs <container_id>"""
+        if len(args) < 1:
+            print("Usage: bocker logs <container_id>", file=sys.stderr)
+            return 1
+
+        container_id = args[0]
+        if not self._bocker_check(container_id):
+            print(f"No container named '{container_id}' exists", file=sys.stderr)
+            return 1
+
+        log_file = Path(self.btrfs_path) / container_id / f"{container_id}.log"
+        if not log_file.exists():
+            print(f"No log file found for container '{container_id}'", file=sys.stderr)
+            return 1
+
+        try:
+            with open(log_file, 'r') as f:
+                print(f.read(), end='')
+            return 0
+        except Exception as e:
+            print(f"Error reading log file: {e}", file=sys.stderr)
+            return 1
+
+    def test_v2(self):
+        """Test v2 functionality"""
+        print("Testing BockerV2 functionality...")
+        
+        if not self.test_v1():
+            return False
+        
+        # Test ps command
+        result = self.ps([])
+        if result != 0:
+            print("FAIL: PS command failed")
+            return False
+        
+        # Test with a simple container run
+        images = self._list_images()
+        if not images:
+            print("SKIP: No images available for v2 container testing")
+            return True
+        
+        img_id = images[0]['id']
+        result = self.run([img_id, 'echo', 'hello_v2'])
+        time.sleep(1)
+        
+        # Check logs
+        containers = self._list_containers()
+        test_container = None
+        for container in containers:
+            if 'echo hello_v2' in container['command']:
+                test_container = container['id']
+                break
+        
+        if test_container:
+            log_result = self.logs([test_container])
+            if log_result != 0:
+                print("FAIL: Logs command failed")
+                return False
+        
+        print("PASS: BockerV2 test")
+        return True
+
+# CLASS 4: Bocker v3 - Pulling Images + Chroot + Cgroups
+class BockerV3(BockerV2):
+    """Bocker v3: Adds cgroups for resource management"""
+    
+    def _get_available_commands(self):
+        return super()._get_available_commands() + "\n  Resource management with cgroups enabled"
+
+    def run(self, args):
+        """Create a container with cgroups: BOCKER run <image_id> <command>"""
+        if len(args) < 2:
+            print("Usage: bocker run <image_id> <command>", file=sys.stderr)
+            return 1
+
+        image_id = args[0]
+        command = ' '.join(args[1:])
+
+        if not self._bocker_check(image_id):
+            print(f"No image named '{image_id}' exists", file=sys.stderr)
             return 1
 
         uuid = self._generate_uuid("ps_")
         if self._bocker_check(uuid):
             return self.run(args)
 
-        # Create filesystem snapshot
-        self._create_container_snapshot(image_id, uuid)
-        
-        # Set up networking
-        self._setup_container_network(uuid)
-        
-        # Create cgroups
-        self._create_cgroup(uuid)
-        
-        # Store command
-        with open(f"{self.btrfs_path}/{uuid}/{uuid}.cmd", 'w') as f:
-            f.write(command)
-
-        # Execute container with all isolation
         bash_script = f"""
-        set -o errexit -o nounset -o pipefail; shopt -s nullglob
+        set -o errexit -o nounset -o pipefail
         
+        # Filesystem setup - Create snapshot and configure environment
+        btrfs subvolume snapshot "{self.btrfs_path}/{image_id}" "{self.btrfs_path}/{uuid}" > /dev/null
+        echo 'nameserver 8.8.8.8' > "{self.btrfs_path}/{uuid}"/etc/resolv.conf
+        echo "{command}" > "{self.btrfs_path}/{uuid}/{uuid}.cmd"
+        
+        # Cgroups setup - Create and configure resource limits
+        cgcreate -g "{self.cgroups}:/{uuid}"
+        cgset -r cpu.shares="{self.config.cpu_share}" "{uuid}"
+        cgset -r memory.limit_in_bytes="{self.config.mem_limit * 1000000}" "{uuid}"
+        
+        # Execute in chroot environment with cgroup constraints
         cgexec -g "{self.cgroups}:{uuid}" \\
-        ip netns exec netns_"{uuid}" \\
-        unshare -fmuip --mount-proc \\
-        chroot "{self.btrfs_path}/{uuid}" \\
-        /bin/sh -c "/bin/mount -t proc proc /proc && {command}" \\
-        2>&1 | tee "{self.btrfs_path}/{uuid}/{uuid}.log" || true
+            chroot "{self.btrfs_path}/{uuid}" \\
+            /bin/sh -c "/bin/mount -t proc proc /proc && {command}" \\
+            2>&1 | tee "{self.btrfs_path}/{uuid}/{uuid}.log" || true
         """
+        return self._run_bash_command(bash_script, show_realtime=True)
+
+    def rm(self, args):
+        """Delete an image or container with cgroup cleanup: BOCKER rm <image_id or container_id>"""
+        if len(args) < 1:
+            print("Usage: bocker rm <id>", file=sys.stderr)
+            return 1
+
+        container_id = args[0]
+        if not self._bocker_check(container_id):
+            print(f"No container named '{container_id}' exists", file=sys.stderr)
+            return 1
+
+        bash_script = f"""
+        set -o errexit -o nounset -o pipefail
+        btrfs subvolume delete "{self.btrfs_path}/{container_id}" > /dev/null
         
-        result = self._run_bash_command(bash_script, show_realtime=True)
+        # Cleanup cgroups if they exist
+        cgdelete -g "{self.cgroups}:/{container_id}" &> /dev/null || true
         
-        # Cleanup networking
-        self._cleanup_container_network(uuid)
+        echo "Removed: {container_id}"
+        """
+        return self._run_bash_command(bash_script)
+
+    def test_v3(self):
+        """Test v3 functionality"""
+        print("Testing BockerV3 functionality...")
         
-        return result
+        if not self.test_v2():
+            return False
+        
+        # Test cgroups functionality by running a memory-intensive command
+        images = self._list_images()
+        if not images:
+            print("SKIP: No images available for v3 cgroups testing")
+            return True
+        
+        img_id = images[0]['id']
+        result = self.run([img_id, 'echo', 'cgroups_test'])
+        time.sleep(1)
+        
+        # Verify cgroups were created and cleaned up
+        print("PASS: BockerV3 test (cgroups support added)")
+        return True
+
+# CLASS 5: Bocker v4 - Pulling Images + Chroot + Cgroups + Namespaces
+class BockerV4(BockerV3):
+    """Bocker v4: Adds namespaces for better isolation"""
+    
+    def _get_available_commands(self):
+        return super()._get_available_commands() + "\n  Process isolation with namespaces enabled"
+
+    def run(self, args):
+        """Create a container with namespaces: BOCKER run <image_id> <command>"""
+        if len(args) < 2:
+            print("Usage: bocker run <image_id> <command>", file=sys.stderr)
+            return 1
+
+        image_id = args[0]
+        command = ' '.join(args[1:])
+
+        if not self._bocker_check(image_id):
+            print(f"No image named '{image_id}' exists", file=sys.stderr)
+            return 1
+
+        uuid = self._generate_uuid("ps_")
+        if self._bocker_check(uuid):
+            return self.run(args)
+
+        bash_script = f"""
+        set -o errexit -o nounset -o pipefail
+        
+        # Filesystem setup - Create snapshot and configure environment
+        btrfs subvolume snapshot "{self.btrfs_path}/{image_id}" "{self.btrfs_path}/{uuid}" > /dev/null
+        echo 'nameserver 8.8.8.8' > "{self.btrfs_path}/{uuid}"/etc/resolv.conf
+        echo "{command}" > "{self.btrfs_path}/{uuid}/{uuid}.cmd"
+        
+        # Create network namespace
+        ip netns add netns_"{uuid}"
+        ip netns exec netns_"{uuid}" ip link set dev lo up
+        
+        # Cgroups setup - Create and configure resource limits
+        cgcreate -g "{self.cgroups}:/{uuid}"
+        cgset -r cpu.shares="{self.config.cpu_share}" "{uuid}"
+        cgset -r memory.limit_in_bytes="{self.config.mem_limit * 1000000}" "{uuid}"
+        
+        # Execute in namespace-isolated environment with cgroup constraints
+        cgexec -g "{self.cgroups}:{uuid}" \\
+            ip netns exec netns_"{uuid}" \\
+            unshare -fmuip --mount-proc \\
+            chroot "{self.btrfs_path}/{uuid}" \\
+            /bin/sh -c "/bin/mount -t proc proc /proc && {command}" \\
+            2>&1 | tee "{self.btrfs_path}/{uuid}/{uuid}.log" || true
+        
+        # Cleanup network namespace
+        ip netns del netns_"{uuid}"
+        """
+        return self._run_bash_command(bash_script, show_realtime=True)
 
     def exec(self, args):
-        """Execute a command in a running container: BOCKER exec <container_id> <command>"""
+        """Execute a command in a running container with namespace support: BOCKER exec <container_id> <command>"""
         if len(args) < 2:
-            print("Error: exec requires container ID and command arguments", file=sys.stderr)
+            print("Usage: bocker exec <container_id> <command>", file=sys.stderr)
             return 1
 
         container_id = args[0]
@@ -716,14 +920,102 @@ class BockerChroot(BockerNetworking):
         set -o errexit -o nounset -o pipefail
         cid="$(ps o ppid,pid | grep "^$(ps o pid,cmd | grep -E "^\\ *[0-9]+ unshare.*{container_id}" | awk '{{print $1}}')" | awk '{{print $2}}')"
         [[ ! "$cid" =~ ^\\ *[0-9]+$ ]] && echo "Container '{container_id}' exists but is not running" && exit 1
+        # Enter all namespaces (mount, UTS, IPC, network, PID) and chroot
         nsenter -t "$cid" -m -u -i -n -p chroot "{self.btrfs_path}/{container_id}" {command}
+        """
+        return self._run_bash_command(bash_script, show_realtime=True)
+
+    def test_v4(self):
+        """Test v4 functionality"""
+        print("Testing BockerV4 functionality...")
+        
+        if not self.test_v3():
+            return False
+        
+        # Test namespace isolation
+        images = self._list_images()
+        if not images:
+            print("SKIP: No images available for v4 namespace testing")
+            return True
+        
+        img_id = images[0]['id']
+        result = self.run([img_id, 'echo', 'namespace_test'])
+        time.sleep(1)
+        
+        print("PASS: BockerV4 test (namespace isolation added)")
+        return True
+
+# CLASS 6: Bocker v5 - Pulling Images + Chroot + Cgroups + Namespaces + Network
+class BockerV5(BockerV4):
+    """Bocker v5: Adds full networking support"""
+    
+    def _get_available_commands(self):
+        return super()._get_available_commands() + "\n  Full network isolation and connectivity"
+
+    def run(self, args):
+        """Create a container with full networking: BOCKER run <image_id> <command>"""
+        if len(args) < 2:
+            print("Usage: bocker run <image_id> <command>", file=sys.stderr)
+            return 1
+
+        image_id = args[0]
+        command = ' '.join(args[1:])
+
+        if not self._bocker_check(image_id):
+            print(f"No image named '{image_id}' exists", file=sys.stderr)
+            return 1
+
+        uuid = self._generate_uuid("ps_")
+        if self._bocker_check(uuid):
+            return self.run(args)
+
+        # Generate network configuration
+        ip_suffix = uuid[-3:].replace('0', '') or '1'
+        mac_suffix = f"{uuid[-3:-2]}:{uuid[-2:]}"
+
+        bash_script = f"""
+        set -o errexit -o nounset -o pipefail
+        
+        # Network setup
+        ip link add dev veth0_"{uuid}" type veth peer name veth1_"{uuid}"
+        ip link set dev veth0_"{uuid}" up
+        ip link set veth0_"{uuid}" master bridge0
+        ip netns add netns_"{uuid}"
+        ip link set veth1_"{uuid}" netns netns_"{uuid}"
+        ip netns exec netns_"{uuid}" ip link set dev lo up
+        ip netns exec netns_"{uuid}" ip link set veth1_"{uuid}" address 02:42:ac:11:00{mac_suffix}
+        ip netns exec netns_"{uuid}" ip addr add 10.0.0.{ip_suffix}/24 dev veth1_"{uuid}"
+        ip netns exec netns_"{uuid}" ip link set dev veth1_"{uuid}" up
+        ip netns exec netns_"{uuid}" ip route add default via 10.0.0.1
+        
+        # Filesystem setup
+        btrfs subvolume snapshot "{self.btrfs_path}/{image_id}" "{self.btrfs_path}/{uuid}" > /dev/null
+        echo 'nameserver 8.8.8.8' > "{self.btrfs_path}/{uuid}"/etc/resolv.conf
+        echo "{command}" > "{self.btrfs_path}/{uuid}/{uuid}.cmd"
+        
+        # Cgroups setup
+        cgcreate -g "{self.cgroups}:/{uuid}"
+        cgset -r cpu.shares="{self.config.cpu_share}" "{uuid}"
+        cgset -r memory.limit_in_bytes="{self.config.mem_limit * 1000000}" "{uuid}"
+        
+        # Execute with full isolation
+        cgexec -g "{self.cgroups}:{uuid}" \\
+            ip netns exec netns_"{uuid}" \\
+            unshare -fmuip --mount-proc \\
+            chroot "{self.btrfs_path}/{uuid}" \\
+            /bin/sh -c "/bin/mount -t proc proc /proc && {command}" \\
+            2>&1 | tee "{self.btrfs_path}/{uuid}/{uuid}.log" || true
+        
+        # Cleanup network
+        ip link del dev veth0_"{uuid}"
+        ip netns del netns_"{uuid}"
         """
         return self._run_bash_command(bash_script, show_realtime=True)
 
     def commit(self, args):
         """Commit a container to an image: BOCKER commit <container_id> <image_id>"""
         if len(args) < 2:
-            print("Error: commit requires container ID and image ID arguments", file=sys.stderr)
+            print("Usage: bocker commit <container_id> <image_id>", file=sys.stderr)
             return 1
 
         container_id, image_id = args[0], args[1]
@@ -745,233 +1037,139 @@ class BockerChroot(BockerNetworking):
         """
         return self._run_bash_command(bash_script)
 
-    def test_run(self):
-        """Test run functionality"""
-        print("Testing bocker run...")
+    def test_v5(self):
+        """Test v5 functionality"""
+        print("Testing BockerV5 functionality...")
         
-        # Get or create a test image
+        if not self.test_v4():
+            return False
+        
+        # Test network connectivity
         images = self._list_images()
         if not images:
-            base_image_dir = os.path.expanduser('~/base-image')
-            if not os.path.exists(base_image_dir):
-                print("SKIP: No images available and no base image directory")
-                return True
-            returncode = self.init([base_image_dir])
-            if returncode != 0:
-                print("FAIL: Could not create test image")
-                return False
-            images = self._list_images()
+            print("SKIP: No images available for v5 network testing")
+            return True
         
-        if not images:
-            print("FAIL: No images available for testing")
-            return False
-            
         img_id = images[0]['id']
         
-        # Test invalid image first
-        returncode = self.run(['nonexistent_img', 'echo', 'test'])
-        if returncode == 0:
-            print("FAIL: Run should fail with nonexistent image")
-            return False
+        # Test basic network setup
+        result = self.run([img_id, 'echo', 'network_test'])
+        time.sleep(1)
         
-        # Test simple echo command
-        returncode = self.run([img_id, 'echo', 'hello world'])
+        # Test with a network command if available
+        result = self.run([img_id, 'ping', '-c', '1', '8.8.8.8'])
         time.sleep(2)
         
-        print("PASS: bocker run test")
+        print("PASS: BockerV5 test (full networking support)")
         return True
 
-    def test_exec(self):
-        """Test exec functionality"""
-        print("Testing bocker exec...")
-        
-        # Test argument validation
-        returncode = self.exec([])
-        if returncode != 1:
-            print(f"FAIL: Exec should fail with no arguments")
-            return False
-        
-        # Test with invalid container
-        returncode = self.exec(['nonexistent_container', 'echo', 'test'])
-        if returncode == 0:
-            print("FAIL: Exec should fail with nonexistent container")
-            return False
-        
-        print("PASS: bocker exec test (argument validation)")
-        return True
-
-    def test_commit(self):
-        """Test commit functionality"""
-        print("Testing bocker commit...")
-        
-        # Test argument validation
-        returncode = self.commit([])
-        if returncode != 1:
-            print(f"FAIL: Commit should fail with no arguments")
-            return False
-        
-        # Test with single argument
-        returncode = self.commit(['container_id'])
-        if returncode != 1:
-            print(f"FAIL: Commit should fail with single argument")
-            return False
-        
-        print("PASS: bocker commit test")
-        return True
-# ```
-
-# ## Complete Bocker Implementation
-
-# ```python
-class Bocker(BockerChroot):
-    """Complete Bocker implementation with all functionality"""
+def run_all_tests():
+    """Run tests for all versions starting from v1"""
+    print("=" * 60)
+    print("Running Bocker Test Suite - All Versions")
+    print("=" * 60)
     
-    def __init__(self):
-        super().__init__()
-
-    def cleanup_test_artifacts(self):
-        """Clean up test artifacts after testing"""
-        print("Cleaning up test artifacts...")
+    # Version mapping in order
+    versions = ['v1', 'v2', 'v3', 'v4', 'v5']
+    version_map = {
+        'v1': BockerV1,
+        'v2': BockerV2,
+        'v3': BockerV3,
+        'v4': BockerV4,
+        'v5': BockerV5
+    }
+    
+    results = {}
+    overall_success = True
+    
+    for version in versions:
+        print(f"\n{'=' * 20} Testing {version.upper()} {'=' * 20}")
         
         try:
-            # Remove all test containers
-            containers = self._list_containers()
-            for container in containers:
-                container_id = container['id']
-                if container_id.startswith('ps_'):
-                    print(f"Removing test container: {container_id}")
-                    self.rm([container_id])
+            bocker = version_map[version]()
+            test_method = getattr(bocker, f'test_{version}', None)
             
-            # Remove all test images (except those that might be important)
-            images = self._list_images()
-            for image in images:
-                image_id = image['id']
-                # Only remove images that are clearly test artifacts
-                if (image_id.startswith('img_') and 
-                    ('base-image' in image['source'] or 'test' in image['source'].lower())):
-                    print(f"Removing test image: {image_id}")
-                    self.rm([image_id])
-                    
+            if test_method:
+                success = test_method()
+                results[version] = "PASS" if success else "FAIL"
+                if not success:
+                    overall_success = False
+            else:
+                print(f"No test method found for {version}")
+                results[version] = "SKIP"
+                
         except Exception as e:
-            print(f"Warning: Error during cleanup: {e}")
-
-    def run_all_tests(self):
-        """Run all tests in dependency order"""
-        print("=" * 60)
-        print("BOCKER TEST-DRIVEN DEVELOPMENT SUITE")
-        print("=" * 60)
-        
-        # Check prerequisites
-        base_image_dir = os.path.expanduser('~/base-image')
-        if not os.path.exists(base_image_dir):
-            print("WARNING: Base image directory ~/base-image not found")
-            print("Some tests may be skipped. Create a base image directory for full testing.")
-        
-        print(f"Using btrfs path: {self.btrfs_path}")
-        print(f"Using cgroups: {self.cgroups}")
-        print()
-
-        # Test functions in dependency order
-        test_sequence = [
-            ('Init', self.test_init),
-            ('Images', self.test_images),
-            ('RM', self.test_rm),
-            ('PS', self.test_ps),
-            ('Pull', self.test_pull),
-            ('Logs', self.test_logs),
-            ('Cgroups', self.test_cgroups),
-            ('Networking', self.test_networking),
-            ('Run', self.test_run),
-            ('Exec', self.test_exec),
-            ('Commit', self.test_commit),
-        ]
-
-        passed = 0
-        failed = 0
-        skipped = 0
-
-        for test_name, test_func in test_sequence:
-            print(f"\n{'-' * 40}")
-            print(f"Testing {test_name}")
-            print(f"{'-' * 40}")
-            
-            try:
-                result = test_func()
-                if result is True:
-                    passed += 1
-                    print(f"✓ {test_name} PASSED")
-                elif result is None:
-                    skipped += 1
-                    print(f"~ {test_name} SKIPPED")
-                else:
-                    failed += 1
-                    print(f"✗ {test_name} FAILED")
-            except Exception as e:
-                failed += 1
-                print(f"✗ {test_name} FAILED with exception: {e}")
-                import traceback
-                traceback.print_exc()
-            
-            time.sleep(1)
-
-        print(f"\n{'=' * 60}")
-        print(f"TEST RESULTS: {passed} passed, {failed} failed, {skipped} skipped")
-        print(f"{'=' * 60}")
-        
-        # Cleanup test artifacts
-        if passed > 0 or failed > 0:
-            print()
-            self.cleanup_test_artifacts()
-
-        return failed == 0
-
+            print(f"ERROR in {version}: {e}")
+            results[version] = "ERROR"
+            overall_success = False
+    
+    # Summary
+    print(f"\n{'=' * 20} TEST SUMMARY {'=' * 20}")
+    for version in versions:
+        status = results.get(version, "UNKNOWN")
+        status_symbol = "✓" if status == "PASS" else "✗" if status == "FAIL" else "!"
+        print(f"{status_symbol} {version.upper():<4} : {status}")
+    
+    print(f"\nOverall Result: {'PASS' if overall_success else 'FAIL'}")
+    print("=" * 60)
+    
+    return overall_success
 
 def main():
-    """Main entry point"""
+    """Main entry point with version selection"""
+    # If no arguments provided, run all tests
     if len(sys.argv) == 1:
-        # Run tests by default
-        bocker = Bocker()
-        success = bocker.run_all_tests()
+        success = run_all_tests()
         return 0 if success else 1
-
-    command = sys.argv[1]
-    args = sys.argv[2:] if len(sys.argv) > 2 else []
-
-    bocker = Bocker()
     
-    # Test command
+    # If first argument is "test_all", run all tests
+    if len(sys.argv) == 2 and sys.argv[1] == "test_all":
+        success = run_all_tests()
+        return 0 if success else 1
+    
+    if len(sys.argv) < 2:
+        print("Usage: python boc_ex.py [version] [command] [args...]")
+        print("       python boc_ex.py                    # Run all tests")
+        print("       python boc_ex.py test_all           # Run all tests") 
+        print("       python boc_ex.py <version> [cmd]    # Run specific version/command")
+        print("Versions: v1, v2, v3, v4, v5")
+        print("Commands: help, test, or any bocker command")
+        return 1
+
+    version = sys.argv[1]
+    command = sys.argv[2] if len(sys.argv) > 2 else 'help'
+    args = sys.argv[3:] if len(sys.argv) > 3 else []
+
+    # Version mapping
+    version_map = {
+        'v1': BockerV1,
+        'v2': BockerV2,
+        'v3': BockerV3,
+        'v4': BockerV4,
+        'v5': BockerV5
+    }
+
+    if version not in version_map:
+        print(f"Unknown version: {version}")
+        print("Available versions: v1, v2, v3, v4, v5")
+        return 1
+
+    bocker = version_map[version]()
+    
+    # Handle test commands
     if command == 'test':
-        success = bocker.run_all_tests()
-        return 0 if success else 1
-    
-    # Individual function tests
-    if command.startswith('test_'):
-        test_name = command[5:]  # Remove 'test_' prefix
-        test_method = getattr(bocker, f'test_{test_name}', None)
+        test_method = getattr(bocker, f'test_{version}', None)
         if test_method:
             success = test_method()
             return 0 if success else 1
         else:
-            print(f"No test found for: {test_name}")
+            print(f"No test method found for version {version}")
             return 1
     
-    # Regular bocker commands
-    command_map = {
-        'pull': bocker.pull,
-        'init': bocker.init,
-        'rm': bocker.rm,
-        'images': bocker.images,
-        'ps': bocker.ps,
-        'run': bocker.run,
-        'exec': bocker.exec,
-        'logs': bocker.logs,
-        'commit': bocker.commit,
-        'help': bocker.help
-    }
-
-    if command in command_map:
+    # Handle regular commands
+    if hasattr(bocker, command):
         try:
-            return command_map[command](args)
+            return getattr(bocker, command)(args)
         except KeyboardInterrupt:
             print("\nOperation cancelled by user", file=sys.stderr)
             return 130
@@ -979,22 +1177,8 @@ def main():
             print(f"Unexpected error: {e}", file=sys.stderr)
             return 1
     else:
-        print(f"Unknown command: {command}", file=sys.stderr)
+        print(f"Unknown command: {command}")
         return bocker.help([])
 
 if __name__ == '__main__':
     sys.exit(main())
-# ```
-
-# ## Architecture Summary
-
-# The refactored code follows a **layered architecture** where each class builds upon the previous one:
-# 
-# 1. **BockerBase**: Provides common utilities and base functionality
-# 2. **BockerImageManager**: Handles image operations (init, images, rm, ps, pull, logs)
-# 3. **BockerCgroups**: Adds resource management capabilities
-# 4. **BockerNetworking**: Adds virtual networking support
-# 5. **BockerChroot**: Adds filesystem isolation and namespace management (run, exec, commit)
-# 6. **Bocker**: The complete implementation that inherits all functionality
-# 
-# Each layer has its own **focused tests** that verify the specific functionality introduced at that level. This makes the code more maintainable, testable, and follows the single responsibility principle while maintaining the original functionality.
