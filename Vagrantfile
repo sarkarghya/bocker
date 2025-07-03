@@ -147,9 +147,6 @@ Vagrant.configure(2) do |config|
   # Sync the bocker directory
   config.vm.synced_folder ".", "/vagrant", type: "virtualbox"
   
-  # Run the cgroup switch script first
-  config.vm.provision "shell", inline: $cgroup_switch_script, privileged: true
-  
   # Run the main provisioning script
   config.vm.provision "shell", inline: $script, privileged: true
   
