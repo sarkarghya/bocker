@@ -197,9 +197,9 @@ import tempfile
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from typing import Optional, List, Dict
-from dotenv import load_dotenv
 
 @dataclass
 class BockerConfig:
@@ -531,88 +531,120 @@ class BockerV1(BockerBase):
         return True
 
     def pull(self, args):
-        """Pull an image from cloud storage: BOCKER pull <name> <tag>"""
+        """Pull an image from Docker Hub: BOCKER pull <name> <tag>"""
         if len(args) < 2:
             print("Usage: bocker pull <name> <tag>", file=sys.stderr)
             return 1
 
         name, tag = args[0], args[1]
-        load_dotenv()
-        r2_domain = os.getenv('R2_DOMAIN')
-        if not r2_domain:
-            print("Error: R2_DOMAIN not found in environment", file=sys.stderr)
-            return 1
+        
+        # Architecture selection - for macOS on Apple Silicon (M1/M2/M3)
+        import platform
+        machine = platform.machine().lower()
+        if machine in ['arm64', 'aarch64']:
+            TARGET_ARCH = "arm64"
+            TARGET_VARIANT = "v8"
+        else:
+            TARGET_ARCH = "amd64"
+            TARGET_VARIANT = None
 
         temp_base = tempfile.mkdtemp(prefix=f"bocker_{name}_{tag}_")
-        download_path = os.path.join(temp_base, "download")
-        extract_path = os.path.join(temp_base, "extract")
-        process_path = os.path.join(temp_base, "process")
         
-        for path in [download_path, extract_path, process_path]:
-            os.makedirs(path, exist_ok=True)
-
         try:
-            tarball_url = f"https://{r2_domain}/{name}_{tag}.tar.gz"
-            compressed_filename = os.path.join(download_path, f"{name}_{tag}.tar.gz")
-            print(f"Downloading {name}:{tag} from {r2_domain}")
-            
-            resp = requests.get(tarball_url, stream=True)
+            # Parse image reference for Docker Hub
+            registry = 'registry-1.docker.io'
+            image = name
+            if '/' not in image:
+                image = f"library/{image}"
+
+            print(f"Registry: {registry}")
+            print(f"Image: {image}")
+            print(f"Tag: {tag}")
+            print(f"Target architecture: {TARGET_ARCH}{f' variant {TARGET_VARIANT}' if TARGET_VARIANT else ''}")
+
+            # Get auth token for Docker Hub
+            headers = {}
+            token_url = f"https://auth.docker.io/token?service=registry.docker.io&scope=repository:{image}:pull"
+            token_resp = requests.get(token_url)
+            token_resp.raise_for_status()
+            token = token_resp.json()['token']
+            headers['Authorization'] = f'Bearer {token}'
+
+            # Step 1: Get manifest list
+            manifest_list_url = f"https://{registry}/v2/{image}/manifests/{tag}"
+            print(f"\nFetching manifest list from: {manifest_list_url}")
+
+            resp = requests.get(manifest_list_url, headers=headers)
             resp.raise_for_status()
-            
-            total_size = int(resp.headers.get('content-length', 0))
-            downloaded = 0
-            with open(compressed_filename, 'wb') as f:
-                for chunk in resp.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        if total_size > 0:
-                            percent = (downloaded / total_size) * 100
-                            print(f"\rProgress: {percent:.1f}%", end='', flush=True)
-            print(f"\nDownloaded {compressed_filename}")
+            manifest_list = resp.json()
 
-            with tarfile.open(compressed_filename, "r:gz") as tar:
-                tar.extractall(path=extract_path)
+            # Step 2: Find the manifest for our target architecture
+            target_manifest = None
+            for manifest in manifest_list.get('manifests', []):
+                platform_info = manifest.get('platform', {})
+                if platform_info.get('architecture') == TARGET_ARCH:
+                    # Check variant if specified
+                    if TARGET_VARIANT:
+                        if platform_info.get('variant') == TARGET_VARIANT:
+                            target_manifest = manifest
+                            break
+                    else:
+                        # No variant specified, take the first match
+                        target_manifest = manifest
+                        break
 
-            manifest_path = None
-            for root, dirs, files in os.walk(extract_path):
-                if 'manifest.json' in files:
-                    manifest_path = os.path.join(root, 'manifest.json')
-                    break
-
-            if not manifest_path:
-                print("Error: manifest.json not found", file=sys.stderr)
+            if not target_manifest:
+                print(f"\nError: No manifest found for architecture {TARGET_ARCH}{f' variant {TARGET_VARIANT}' if TARGET_VARIANT else ''}")
+                print("\nAvailable architectures:")
+                for manifest in manifest_list.get('manifests', []):
+                    platform_info = manifest.get('platform', {})
+                    print(f"  - {platform_info.get('architecture')} {platform_info.get('variant', '')}")
                 return 1
 
-            with open(manifest_path, 'r') as f:
-                manifest = json.load(f)
+            manifest_digest = target_manifest['digest']
+            print(f"\nFound manifest for {TARGET_ARCH}: {manifest_digest}")
 
-            extract_root = os.path.dirname(manifest_path)
-            for item in os.listdir(extract_root):
-                src = os.path.join(extract_root, item)
-                dst = os.path.join(process_path, item)
-                if os.path.isdir(src):
-                    shutil.copytree(src, dst)
-                else:
-                    shutil.copy2(src, dst)
+            # Step 3: Get the actual manifest using the digest
+            manifest_url = f"https://{registry}/v2/{image}/manifests/{manifest_digest}"
+            headers['Accept'] = 'application/vnd.docker.distribution.manifest.v2+json'
 
-            for entry in manifest:
-                if 'Layers' in entry:
-                    for layer in entry['Layers']:
-                        layer_path = os.path.join(process_path, layer)
-                        if os.path.exists(layer_path):
-                            with tarfile.open(layer_path, 'r') as layer_tar:
-                                layer_tar.extractall(path=process_path)
-                            os.remove(layer_path)
+            print(f"Fetching manifest from: {manifest_url}")
+            resp = requests.get(manifest_url, headers=headers)
+            resp.raise_for_status()
+            manifest = resp.json()
 
+            print(f"\nManifest type: {manifest.get('mediaType', 'unknown')}")
+            print(f"Number of layers: {len(manifest.get('layers', []))}")
+
+            # Step 4: Download and extract layers in order
+            for i, layer in enumerate(manifest.get('layers', [])):
+                digest = layer['digest']
+                size = layer.get('size', 0)
+                print(f"\nProcessing layer {i + 1}/{len(manifest['layers'])}: {digest} ({size} bytes)")
+
+                # Download layer blob
+                blob_url = f"https://{registry}/v2/{image}/blobs/{digest}"
+                blob_resp = requests.get(blob_url, headers=headers, stream=True)
+                blob_resp.raise_for_status()
+
+                # Extract layer (layers are gzipped tarballs)
+                print(f"  Extracting to {temp_base}...")
+                with tarfile.open(fileobj=BytesIO(blob_resp.content), mode='r:gz') as tar:
+                    tar.extractall(temp_base)
+
+            # Create btrfs subvolume and copy extracted content
             img_uuid = self._generate_uuid("img_")
             bash_script = f"""
             set -o errexit -o nounset -o pipefail
             btrfs subvolume create "{self.btrfs_path}/{img_uuid}" > /dev/null
-            cp -rf --reflink=auto "{process_path}"/* "{self.btrfs_path}/{img_uuid}/" > /dev/null
+            cp -rf --reflink=auto "{temp_base}"/* "{self.btrfs_path}/{img_uuid}/" > /dev/null
             echo "{name}:{tag}" > "{self.btrfs_path}/{img_uuid}/img.source"
             echo "Created: {img_uuid}"
             """
+            
+            print(f"\n✓ Extracted {len(manifest.get('layers', []))} layers")
+            print(f"  Architecture: {TARGET_ARCH}{f' variant {TARGET_VARIANT}' if TARGET_VARIANT else ''}")
+            
             return self._run_bash_command(bash_script)
 
         except Exception as e:
@@ -632,21 +664,25 @@ class BockerV1(BockerBase):
             print("FAIL: Pull should fail with no arguments")
             return False
         
-        returncode = self.pull(['centos'])
+        returncode = self.pull(['alpine'])
         if returncode != 1:
             print("FAIL: Pull should fail with single argument")
             return False
         
-        # Skip if R2_DOMAIN not configured
-        load_dotenv()
-        if not os.getenv('R2_DOMAIN'):
-            print("SKIP: R2_DOMAIN not configured - cannot test actual pull")
+        # Test network connectivity first with a simple request
+        try:
+            import requests
+            response = requests.get('https://registry-1.docker.io', timeout=10)
+            print("Docker Hub connectivity: OK")
+        except Exception as e:
+            print(f"SKIP: Cannot reach Docker Hub - {e}")
             return True
         
-        print("Testing pull with CentOS 7...")
+        print("Testing pull with Alpine latest...")
         initial_image_count = len(self._list_images())
         
-        returncode = self.pull(['centos', '7'])
+        # Use alpine:latest as it's small and reliable
+        returncode = self.pull(['alpine', 'latest'])
         
         if returncode != 0:
             print(f"FAIL: Pull command failed with return code {returncode}")
@@ -658,37 +694,33 @@ class BockerV1(BockerBase):
             print("FAIL: No new image created after pull")
             return False
         
-        # Verify centos image exists
-        centos_found = any('centos:7' in img['source'] for img in new_images)
-        if not centos_found:
-            print("FAIL: CentOS image not found in source after pull")
+        # Verify alpine image exists
+        alpine_found = any('alpine:latest' in img['source'] for img in new_images)
+        if not alpine_found:
+            print("FAIL: Alpine image not found in source after pull")
             return False
         
-        # Find the centos image and test it
-        centos_img = None
+        # Find the alpine image for potential future testing
+        alpine_img = None
         for img in new_images:
-            if 'centos:7' in img['source']:
-                centos_img = img['id']
+            if 'alpine:latest' in img['source']:
+                alpine_img = img['id']
                 break
         
-        # if centos_img:
-        #     print(f"Testing pulled CentOS image: {centos_img}")
-        #     # Test that we can create a container from the pulled image
-        #     returncode = self.run([centos_img, 'echo', 'centos_test'])
-        #     time.sleep(2)
-            
-        #     # Verify container was created
-        #     containers = self._list_containers()
-        #     centos_container = None
-        #     for container in containers:
-        #         if 'echo centos_test' in container['command']:
-        #             centos_container = container['id']
-        #             break
-            
-        #     if centos_container:
-        #         print(f"Successfully created container from pulled image: {centos_container}")
-        #     else:
-        #         print("Warning: Could not create container from pulled image")
+        if alpine_img:
+            print(f"Successfully pulled Alpine image: {alpine_img}")
+            # Verify the image directory contains typical Linux filesystem structure
+            img_path = Path(self.btrfs_path) / alpine_img
+            if img_path.exists():
+                # Check for common directories that should exist in a Linux image
+                expected_dirs = ['bin', 'etc', 'usr']
+                found_dirs = [d for d in expected_dirs if (img_path / d).exists()]
+                if len(found_dirs) >= 2:  # At least 2 out of 3 should exist
+                    print(f"Image structure validation: Found {found_dirs}")
+                else:
+                    print(f"Warning: Image may be incomplete, found dirs: {found_dirs}")
+            else:
+                print("Warning: Image path not found after creation")
 
         print("PASS: bocker pull test")
         return True
