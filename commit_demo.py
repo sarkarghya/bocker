@@ -236,14 +236,14 @@ def run(args):
     
     btrfs subvolume snapshot "{btrfs_path}/{image_id}" "{btrfs_path}/{uuid}" > /dev/null
     echo "{command}" > "{btrfs_path}/{uuid}/{uuid}.cmd"
+    
+    # Copy host DNS configuration to container
+    cp /etc/resolv.conf "{btrfs_path}/{uuid}"/etc/resolv.conf
 
     unshare -fmuip --mount-proc \\
     chroot "{btrfs_path}/{uuid}" \\
     /bin/sh -c "/bin/mount -t proc proc /proc && {command}" \\
     2>&1 | tee "{btrfs_path}/{uuid}/{uuid}.log" || true
-
-    ip link del dev veth0_"{uuid}"
-    ip netns del netns_"{uuid}"
     """
     return _run_bash_command(bash_script, show_realtime=True)
 
