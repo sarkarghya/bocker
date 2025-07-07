@@ -264,7 +264,7 @@ class Bocker:
         """
         return self._run_bash_command(bash_script)
 
-    def test_commit(self):
+    def demo_commit(self):
         """Test commit functionality using wget installation pattern"""
         print("Testing bocker commit...")
         
