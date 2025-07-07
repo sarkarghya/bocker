@@ -8,10 +8,6 @@ import sys
 import time
 from pathlib import Path
 
-class BockerError(Exception):
-    """Custom exception for Bocker operations"""
-    pass
-
 def get_btrfs_path():
     """Get btrfs path from environment or default"""
     return os.environ.get('BOCKER_BTRFS_PATH', '/var/bocker')
@@ -113,31 +109,6 @@ def _format_table_output(headers, rows):
     return '\n'.join(output)
 
 def init(args):
-    """Create an image from a directory: BOCKER init <directory>"""
-    if len(args) < 1:
-        print("Usage: bocker init <directory>", file=sys.stderr)
-        return 1
-
-    directory = args[0]
-    if not _directory_exists(directory):
-        print(f"No directory named '{directory}' exists", file=sys.stderr)
-        return 1
-
-    uuid = _generate_uuid("img_")
-    if _bocker_check(uuid):
-        return init(args)
-
-    btrfs_path = get_btrfs_path()
-    bash_script = f"""
-    set -o errexit -o nounset -o pipefail
-    btrfs subvolume create "{btrfs_path}/{uuid}" > /dev/null
-    cp -rf --reflink=auto "{directory}"/* "{btrfs_path}/{uuid}" > /dev/null
-    [[ ! -f "{btrfs_path}/{uuid}"/img.source ]] && echo "{directory}" > "{btrfs_path}/{uuid}"/img.source
-    echo "Created: {uuid}"
-    """
-    return _run_bash_command(bash_script)
-
-def init_and_get_id(args):
     """Create an image from a directory and return the image ID: BOCKER init <directory>"""
     if len(args) < 1:
         return None, 1
@@ -149,7 +120,7 @@ def init_and_get_id(args):
 
     uuid = _generate_uuid("img_")
     if _bocker_check(uuid):
-        return init_and_get_id(args)
+        return init(args)
 
     btrfs_path = get_btrfs_path()
     bash_script = f"""
@@ -236,14 +207,36 @@ def run(args):
     
     btrfs subvolume snapshot "{btrfs_path}/{image_id}" "{btrfs_path}/{uuid}" > /dev/null
     echo "{command}" > "{btrfs_path}/{uuid}/{uuid}.cmd"
-    
-    # Copy host DNS configuration to container
     cp /etc/resolv.conf "{btrfs_path}/{uuid}"/etc/resolv.conf
 
-    unshare -fmuip --mount-proc \\
+    # Create cgroup namespace for container
+    mkdir -p /sys/fs/cgroup/container-{uuid}
+    
+    # Set up cgroups v2 if available, fallback to v1
+    if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
+        # cgroups v2
+        echo "+cpu +memory +pids" > /sys/fs/cgroup/container-{uuid}/cgroup.subtree_control 2>/dev/null || true
+        echo $$ > /sys/fs/cgroup/container-{uuid}/cgroup.procs
+    else
+        # cgroups v1 fallback
+        [ -d /sys/fs/cgroup/cpu ] && mkdir -p /sys/fs/cgroup/cpu/container-{uuid} && echo $$ > /sys/fs/cgroup/cpu/container-{uuid}/tasks
+        [ -d /sys/fs/cgroup/memory ] && mkdir -p /sys/fs/cgroup/memory/container-{uuid} && echo $$ > /sys/fs/cgroup/memory/container-{uuid}/tasks
+        [ -d /sys/fs/cgroup/pids ] && mkdir -p /sys/fs/cgroup/pids/container-{uuid} && echo $$ > /sys/fs/cgroup/pids/container-{uuid}/tasks
+    fi
+    
+    unshare --mount --uts --ipc --pid --mount-proc --fork \\
     chroot "{btrfs_path}/{uuid}" \\
     /bin/sh -c "/bin/mount -t proc proc /proc && {command}" \\
     2>&1 | tee "{btrfs_path}/{uuid}/{uuid}.log" || true
+    
+    # Cleanup cgroup
+    if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
+        rmdir /sys/fs/cgroup/container-{uuid} 2>/dev/null || true
+    else
+        [ -d /sys/fs/cgroup/cpu/container-{uuid} ] && rmdir /sys/fs/cgroup/cpu/container-{uuid}
+        [ -d /sys/fs/cgroup/memory/container-{uuid} ] && rmdir /sys/fs/cgroup/memory/container-{uuid}
+        [ -d /sys/fs/cgroup/pids/container-{uuid} ] && rmdir /sys/fs/cgroup/pids/container-{uuid}
+    fi
     """
     return _run_bash_command(bash_script, show_realtime=True)
 
@@ -301,7 +294,7 @@ def test_commit():
         return True
     
     # Initialize a new image from base and get the exact image ID
-    img_id, returncode = init_and_get_id([base_image_dir])
+    img_id, returncode = init([base_image_dir])
     if returncode != 0 or not img_id:
         print("FAIL: Could not create test image for commit")
         return False
