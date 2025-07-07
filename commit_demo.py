@@ -137,6 +137,34 @@ def init(args):
     """
     return _run_bash_command(bash_script)
 
+def init_and_get_id(args):
+    """Create an image from a directory and return the image ID: BOCKER init <directory>"""
+    if len(args) < 1:
+        return None, 1
+
+    directory = args[0]
+    if not _directory_exists(directory):
+        print(f"No directory named '{directory}' exists", file=sys.stderr)
+        return None, 1
+
+    uuid = _generate_uuid("img_")
+    if _bocker_check(uuid):
+        return init_and_get_id(args)
+
+    btrfs_path = get_btrfs_path()
+    bash_script = f"""
+    set -o errexit -o nounset -o pipefail
+    btrfs subvolume create "{btrfs_path}/{uuid}" > /dev/null
+    cp -rf --reflink=auto "{directory}"/* "{btrfs_path}/{uuid}" > /dev/null
+    [[ ! -f "{btrfs_path}/{uuid}"/img.source ]] && echo "{directory}" > "{btrfs_path}/{uuid}"/img.source
+    echo "Created: {uuid}"
+    """
+    returncode = _run_bash_command(bash_script)
+    if returncode == 0:
+        return uuid, 0
+    else:
+        return None, returncode
+
 def images(args):
     """List images: BOCKER images"""
     images_list = _list_images()
@@ -285,25 +313,13 @@ def test_commit():
         print("SKIP: No base image directory available for commit testing")
         return True
     
-    # Initialize a new image from base
-    returncode = init([base_image_dir])
-    if returncode != 0:
+    # Initialize a new image from base and get the exact image ID
+    img_id, returncode = init_and_get_id([base_image_dir])
+    if returncode != 0 or not img_id:
         print("FAIL: Could not create test image for commit")
         return False
     
-    # Get the newly created image ID
-    images_list = _list_images()
-    img_id = None
-    for img in images_list:
-        if base_image_dir in img['source']:
-            img_id = img['id']
-            break
-    
-    if not img_id:
-        print("FAIL: Could not find created test image")
-        return False
-    
-    print(f"Created test image: {img_id}")
+    print(f"Using created image: {img_id}")
     time.sleep(1)
     
     # Test 1: Run wget command (should fail since wget is not installed)
