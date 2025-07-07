@@ -234,22 +234,9 @@ def run(args):
     bash_script = f"""
     set -o errexit -o nounset -o pipefail; shopt -s nullglob
     
-    ip link add dev veth0_"{uuid}" type veth peer name veth1_"{uuid}"
-    ip link set dev veth0_"{uuid}" up
-    ip link set veth0_"{uuid}" master bridge0
-    ip netns add netns_"{uuid}"
-    ip link set veth1_"{uuid}" netns netns_"{uuid}"
-    ip netns exec netns_"{uuid}" ip link set dev lo up
-    ip netns exec netns_"{uuid}" ip link set veth1_"{uuid}" address 02:42:ac:11:00{mac_suffix}
-    ip netns exec netns_"{uuid}" ip addr add 10.0.0.{ip_suffix}/24 dev veth1_"{uuid}"
-    ip netns exec netns_"{uuid}" ip link set dev veth1_"{uuid}" up
-    ip netns exec netns_"{uuid}" ip route add default via 10.0.0.1
-
     btrfs subvolume snapshot "{btrfs_path}/{image_id}" "{btrfs_path}/{uuid}" > /dev/null
-    echo 'nameserver 8.8.8.8' > "{btrfs_path}/{uuid}"/etc/resolv.conf
     echo "{command}" > "{btrfs_path}/{uuid}/{uuid}.cmd"
-    
-    ip netns exec netns_"{uuid}" \\
+
     unshare -fmuip --mount-proc \\
     chroot "{btrfs_path}/{uuid}" \\
     /bin/sh -c "/bin/mount -t proc proc /proc && {command}" \\
