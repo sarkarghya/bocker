@@ -208,16 +208,35 @@ class Bocker:
         if self._bocker_check(uuid):
             return self.run(args)
 
+        ip_suffix = uuid[-3:].replace('0', '') or '1'
+        mac_suffix = f"{uuid[-3:-2]}:{uuid[-2:]}"
+
         bash_script = f"""
-        set -o errexit -o nounset -o pipefail
+        set -o errexit -o nounset -o pipefail; shopt -s nullglob
         
+        ip link add dev veth0_"{uuid}" type veth peer name veth1_"{uuid}"
+        ip link set dev veth0_"{uuid}" up
+        ip link set veth0_"{uuid}" master bridge0
+        ip netns add netns_"{uuid}"
+        ip link set veth1_"{uuid}" netns netns_"{uuid}"
+        ip netns exec netns_"{uuid}" ip link set dev lo up
+        ip netns exec netns_"{uuid}" ip link set veth1_"{uuid}" address 02:42:ac:11:00{mac_suffix}
+        ip netns exec netns_"{uuid}" ip addr add 10.0.0.{ip_suffix}/24 dev veth1_"{uuid}"
+        ip netns exec netns_"{uuid}" ip link set dev veth1_"{uuid}" up
+        ip netns exec netns_"{uuid}" ip route add default via 10.0.0.1
+
         btrfs subvolume snapshot "{self.btrfs_path}/{image_id}" "{self.btrfs_path}/{uuid}" > /dev/null
+        echo 'nameserver 8.8.8.8' > "{self.btrfs_path}/{uuid}"/etc/resolv.conf
         echo "{command}" > "{self.btrfs_path}/{uuid}/{uuid}.cmd"
         
+        ip netns exec netns_"{uuid}" \\
         unshare -fmuip --mount-proc \\
         chroot "{self.btrfs_path}/{uuid}" \\
         /bin/sh -c "/bin/mount -t proc proc /proc && {command}" \\
         2>&1 | tee "{self.btrfs_path}/{uuid}/{uuid}.log" || true
+
+        ip link del dev veth0_"{uuid}"
+        ip netns del netns_"{uuid}"
         """
         return self._run_bash_command(bash_script, show_realtime=True)
 
@@ -404,16 +423,20 @@ Usage: bocker [command] [args...]
 
 Commands:
   init     Create an image from a directory
+  images   List images
+  images   List images
+  ps       List containers
   images   List images  
+  ps       List containers
   run      Create a container
   ps       List containers
   commit   Commit a container to an image
   rm       Delete an image or container
-  test     Run commit test
+  demo     Run commit demonstration
   help     Display this message
 
-Commit Test:
-  bocker test   - Run a test demonstration of commit functionality"""
+Commit Demo:
+  bocker demo   - Run a complete demonstration of commit functionality"""
         print(help_text)
         return 0
 
@@ -421,9 +444,9 @@ Commit Test:
 def main():
     """Main entry point"""
     if len(sys.argv) == 1:
-        # Run test by default
+        # Run demo by default
         bocker = Bocker()
-        success = bocker.test_commit()
+        success = bocker.demo_commit()
         return 0 if success else 1
 
     command = sys.argv[1]
@@ -439,14 +462,14 @@ def main():
         'ps': bocker.ps,
         'commit': bocker.commit,
         'rm': bocker.rm,
-        'test': lambda _: bocker.test_commit(),
+        'demo': lambda _: bocker.demo_commit(),
         'help': bocker.help
     }
 
     if command in command_map:
         try:
-            if command == 'test':
-                success = bocker.test_commit()
+            if command == 'demo':
+                success = bocker.demo_commit()
                 return 0 if success else 1
             else:
                 return command_map[command](args)
